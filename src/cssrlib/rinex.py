@@ -890,16 +890,11 @@ class rnxdec:
                     prn += 100
                 sat = prn2sat(sys, prn)
 
-                pr = np.zeros(len(self.getSignals(sys, uTYP.C)),
-                              dtype=np.float64)
-                cp = np.zeros(len(self.getSignals(sys, uTYP.L)),
-                              dtype=np.float64)
-                ll = np.zeros(len(self.getSignals(sys, uTYP.L)),
-                              dtype=np.int32)
-                dp = np.zeros(len(self.getSignals(sys, uTYP.D)),
-                              dtype=np.float64)
-                cn = np.zeros(len(self.getSignals(sys, uTYP.S)),
-                              dtype=np.float64)
+                pr = np.zeros(self.nsig[uTYP.C], dtype=np.float64)
+                cp = np.zeros(self.nsig[uTYP.L], dtype=np.float64)
+                ll = np.zeros(self.nsig[uTYP.L], dtype=np.int32)
+                dp = np.zeros(self.nsig[uTYP.D], dtype=np.float64)
+                cn = np.zeros(self.nsig[uTYP.S], dtype=np.float64)
 
                 for i, sig in self.sig_map[sys].items():
 
