@@ -531,16 +531,31 @@ class pppos():
             sigsPR = obs.sig[sys][uTYP.C]
             sigsCP = obs.sig[sys][uTYP.L]
 
+            max_cols = min(obs.L.shape[1], obs.P.shape[1]) if obs.L.ndim == 2 and obs.P.ndim == 2 else 0
+            col_indices = []
+            for col in range(max_cols):
+                if obs.L.shape[1] <= col or obs.P.shape[1] <= col:
+                    continue
+                if obs.L[i, col] != 0.0 and obs.P[i, col] != 0.0:
+                    col_indices.append(col)
+                if len(col_indices) >= nf:
+                    break
+
+            available_nf = len(col_indices)
+            if available_nf == 0:
+                continue
+
             # Wavelength
             #
-            if sys == uGNSS.GLO:
-                lam = np.array([s.wavelength(self.nav.glo_ch[sat])
-                                for s in sigsCP])
-                frq = np.array([s.frequency(self.nav.glo_ch[sat])
-                               for s in sigsCP])
-            else:
-                lam = np.array([s.wavelength() for s in sigsCP])
-                frq = np.array([s.frequency() for s in sigsCP])
+            lam = np.zeros(nf)
+            frq = np.zeros(nf)
+            for f_idx, col in enumerate(col_indices):
+                if sys == uGNSS.GLO:
+                    lam[f_idx] = sigsCP[col].wavelength(self.nav.glo_ch[sat])
+                    frq[f_idx] = sigsCP[col].frequency(self.nav.glo_ch[sat])
+                else:
+                    lam[f_idx] = sigsCP[col].wavelength()
+                    frq[f_idx] = sigsCP[col].frequency()
 
             cbias = np.zeros(self.nav.nf)
             pbias = np.zeros(self.nav.nf)
@@ -682,18 +697,26 @@ class pppos():
             # Receiver/satellite antenna offset
             #
             if self.nav.rcv_ant is None:
-                antrPR = [0.0 for _ in sigsPR]
-                antrCP = [0.0 for _ in sigsCP]
+                antrPR_list = [0.0 for _ in range(available_nf)]
+                antrCP_list = [0.0 for _ in range(available_nf)]
             else:
-                antrPR = antModelRx(self.nav, pos, e[i, :], sigsPR, rtype)
-                antrCP = antModelRx(self.nav, pos, e[i, :], sigsCP, rtype)
+                ant_rx = antModelRx(self.nav, pos, e[i, :], sigsPR, rtype)
+                antrPR_list = [ant_rx[col] for col in col_indices]
+                ant_rx_cp = antModelRx(self.nav, pos, e[i, :], sigsCP, rtype)
+                antrCP_list = [ant_rx_cp[col] for col in col_indices]
+            antrPR = np.zeros(nf)
+            antrCP = np.zeros(nf)
+            antrPR[:available_nf] = antrPR_list
+            antrCP[:available_nf] = antrCP_list
 
             if self.nav.ephopt == 4:
 
-                antsPR = antModelTx(
+                antsPR_all = antModelTx(
                     self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :])
-                antsCP = antModelTx(
+                antsPR_list = [antsPR_all[col] for col in col_indices]
+                antsCP_all = antModelTx(
                     self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :])
+                antsCP_list = [antsCP_all[col] for col in col_indices]
 
             elif cs is not None and cs.cssrmode in (sc.QZS_MADOCA,
                                                     sc.GAL_HAS_SIS,
@@ -703,15 +726,21 @@ class pppos():
                                                     sc.BDS_PPP,
                                                     sc.PVS_PPP):
 
-                antsPR = antModelTx(self.nav, e[i, :], sigsPR,
+                antsPR_all = antModelTx(self.nav, e[i, :], sigsPR,
                                     sat, obs.t, rs[i, :], sig0)
-                antsCP = antModelTx(self.nav, e[i, :], sigsCP,
+                antsPR_list = [antsPR_all[col] for col in col_indices]
+                antsCP_all = antModelTx(self.nav, e[i, :], sigsCP,
                                     sat, obs.t, rs[i, :], sig0)
+                antsCP_list = [antsCP_all[col] for col in col_indices]
 
             else:
+                antsPR_list = [0.0 for _ in sigsPR[:available_nf]]
+                antsCP_list = [0.0 for _ in sigsCP[:available_nf]]
 
-                antsPR = [0.0 for _ in sigsPR]
-                antsCP = [0.0 for _ in sigsCP]
+            antsPR = np.zeros(nf)
+            antsCP = np.zeros(nf)
+            antsPR[:available_nf] = antsPR_list
+            antsCP[:available_nf] = antsCP_list
 
             # Check for invalid values
             #
@@ -727,10 +756,18 @@ class pppos():
             r += relatv - _c*dts[i]
 
             for f in range(nf):
-                y[i, f] = obs.L[i, f]*lam[f]-(r+cpc[i, f])
-                y[i, f+nf] = obs.P[i, f]-(r+prc[i, f])
+                if f >= available_nf:
+                    continue
+                col = col_indices[f]
+                if obs.L.shape[1] <= col or obs.P.shape[1] <= col:
+                    continue
+                y[i, f] = obs.L[i, col]*lam[f]-(r+cpc[i, f])
+                y[i, f+nf] = obs.P[i, col]-(r+prc[i, f])
 
         return y, e, el
+
+    def _valid_double_diff(self, y, iu, ir, f):
+        return y[f + iu*self.nav.nf*2] != 0.0 and y[f + ir*self.nav.nf*2] != 0.0
 
     def sdres(self, obs, x, y, e, sat, el):
         """
@@ -1297,10 +1334,17 @@ class pppos():
                     continue
 
             # cycle-slip detection by geometry-free combination
-            if obs.L.shape[1] > 1:
+            sig_table = obs.sig if hasattr(obs, 'sig') else None
+            sys, _ = sat2prn(sat_i)
+            if (
+                obs.L.shape[1] > 1
+                and sig_table
+                and sys in sig_table
+                and uTYP.L in sig_table[sys]
+                and len(sig_table[sys][uTYP.L]) >= 2
+            ):
                 L1R, L2R = obs.L[j, 0:2]
-                sys, _ = sat2prn(sat_i)
-                sig1, sig2 = obs.sig[sys][uTYP.L][0:2]
+                sig1, sig2 = sig_table[sys][uTYP.L][0:2]
                 if sys == uGNSS.GLO:
                     lam1 = sig1.wavelength(self.nav.glo_ch[sat_i])
                     lam2 = sig2.wavelength(self.nav.glo_ch[sat_i])
@@ -1321,6 +1365,10 @@ class pppos():
                                                         sat2id(sat_i),
                                                         sig1.str(), gf0, gf1,
                                                         gf0-gf1))
+            else:
+                # Single frequency or missing signal metadata: skip GF slip test
+                obs.L = np.atleast_2d(obs.L)
+                obs.P = np.atleast_2d(obs.P)
 
             # Store satellite which have passed all tests
             #
