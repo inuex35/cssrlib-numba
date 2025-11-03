@@ -1,0 +1,8 @@
+scipy
+bitstruct
+galois
+crccheck
+notebook
+numpy
+matplotlib
+cartopy
