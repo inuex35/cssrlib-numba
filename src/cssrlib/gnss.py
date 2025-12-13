@@ -69,7 +69,7 @@ class uGNSS(IntEnum):
 
     GPSMAX = 32
     GALMAX = 36
-    QZSMAX = 10
+    QZSMAX = 17
     BDSMAX = 63
     GLOMAX = 27
     SBSMAX = 39
@@ -811,6 +811,7 @@ class Nav():
 
         # geometry-free combination for cycle-slip detection
         self.gf = np.zeros(uGNSS.MAXSAT)
+        self.gf_r = np.zeros(uGNSS.MAXSAT)
 
         self.tt = 0
         self.t = gtime_t()
