@@ -15,6 +15,10 @@ from cssrlib.dgps import vardgps
 from math import sin, cos
 from cssrlib.ionosphere import klobuchar_delay
 from cssrlib.geometry import geodist, satazel
+from cssrlib.atmosphere import tropmapf_niell
+
+TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
+TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 from cssrlib.orbit import broadcast_orbit
 
 
@@ -140,6 +144,66 @@ def _assemble_sdres_blocks(
                 block_index += 1
 
     return v[:nv], H[:nv, :], Rj[:nv], nb[:block_index]
+
+
+@njit(cache=True)
+def _tropmapf_dispatch(doy: float, pos: np.ndarray, el: float, model: int):
+    if model == TROPO_MODEL_HOPF:
+        mapfh = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 72.0) ** 2))
+        mapfw = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 120.0) ** 2))
+        return mapfh, mapfw
+    elif model == TROPO_MODEL_SAAST:
+        return tropmapf_niell(doy, pos, el)
+    return 0.0, 0.0
+
+
+@njit(cache=True)
+def compute_geometry_and_delays(
+    rs: np.ndarray,
+    rr: np.ndarray,
+    pos: np.ndarray,
+    elmin: float,
+    doy: float,
+    tow: float,
+    alpha: np.ndarray,
+    beta: np.ndarray,
+    trop_hs: float,
+    trop_wet: float,
+    use_tropo: int,
+    use_iono: int,
+    trp_model: int,
+):
+    """Compute geometry, az/el, tropo and iono delays for all satellites."""
+
+    n = rs.shape[0]
+    geom = np.zeros(n, dtype=np.float64)
+    az_out = np.zeros(n, dtype=np.float64)
+    el_out = np.zeros(n, dtype=np.float64)
+    los = np.zeros((n, 3), dtype=np.float64)
+    trop = np.zeros(n, dtype=np.float64)
+    iono = np.zeros(n, dtype=np.float64)
+    valid = np.zeros(n, dtype=np.bool_)
+
+    for i in range(n):
+        rng, los_vec = geodist(rs[i, :], rr)
+        geom[i] = rng
+        los[i, :] = los_vec
+        az_val, el_val = satazel(pos, los_vec)
+        az_out[i] = az_val
+        el_out[i] = el_val
+        if el_val < elmin:
+            continue
+        valid[i] = True
+
+        if use_tropo:
+            mapfh, mapfw = _tropmapf_dispatch(doy, pos, el_val, trp_model)
+            trop[i] = mapfh * trop_hs + mapfw * trop_wet
+
+        if use_iono:
+            iono[i] = klobuchar_delay(tow, pos[0], pos[1], az_val, el_val,
+                                      alpha, beta)
+
+    return geom, az_out, el_out, los, trop, iono, valid
 
 def ionmodel(t, pos, az, el, nav=None, model=uIonoModel.KLOBUCHAR, cs=None):
     """ ionosphere delay estimation """
@@ -411,11 +475,11 @@ class stdpos(pppos):
         el = np.zeros(n)
         az = np.zeros(n)
         e = np.zeros((n, 3))
-        rr_ = rr.copy()
+        rr_ = np.ascontiguousarray(rr.copy(), dtype=np.float64)
 
         # Geodetic position
         #
-        pos = ecef2pos(rr_)
+        pos = np.asarray(ecef2pos(rr_), dtype=np.float64)
 
         if self.nav.trop_opt == 0:  # use tropo model
             trop_hs, trop_wet, _ = tropmodel(obs.t, pos, model=self.nav.trpModel)
@@ -437,7 +501,7 @@ class stdpos(pppos):
         use_iono = 1 if self.nav.iono_opt == 0 else 0
 
         geom_all, az_all, el_all, los_all, trop_all, iono_all, valid_mask = compute_geometry_and_delays(
-            np.asarray(rs, dtype=np.float64),
+            np.ascontiguousarray(np.asarray(rs, dtype=np.float64)),
             rr_,
             pos,
             float(self.nav.elmin),
@@ -447,8 +511,9 @@ class stdpos(pppos):
             beta,
             float(trop_hs),
             float(trop_wet),
-            use_tropo,
-            use_iono,
+            int(use_tropo),
+            int(use_iono),
+            int(self.nav.trpModel),
         )
 
         for i in range(n):

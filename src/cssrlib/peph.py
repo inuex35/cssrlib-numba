@@ -15,7 +15,7 @@ from cssrlib.gnss import rCST, rSigRnx, uGNSS, uTYP, uSIG
 from cssrlib.rinex import rnxdec
 import numpy as np
 from math import pow, sin, cos
-
+from numba import njit
 
 NMAX = 10
 MAXDTE = 900.0
@@ -795,13 +795,16 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
 
     # Rotation matrix from satellite antenna frame to ECEF frame [ex, ey, ez]
     #
-    A = orb2ecef(time, rs)
+    A = np.ascontiguousarray(orb2ecef(time, rs), dtype=np.float64)
     ez = A[2, :]
 
     # Zenith angle and zenith angle grid
     #
-    za = np.rad2deg(np.arccos(np.dot(ez, -e)))
-    za_t = np.arange(ant.zen[0], ant.zen[1]+ant.zen[2], ant.zen[2])
+    cos_za = np.dot(ez, -e)
+    cos_za = np.clip(cos_za, -1.0, 1.0)
+    za = np.rad2deg(np.arccos(cos_za))
+    za_t = np.arange(ant.zen[0], ant.zen[1]+ant.zen[2], ant.zen[2], dtype=np.float64)
+    za_t = np.ascontiguousarray(za_t)
 
     # CoM offset of reference signals
     #
@@ -827,31 +830,45 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
             #
             off0 += fac0_*ant.off[sig]
 
+    off0 = np.ascontiguousarray(off0, dtype=np.float64)
+    e = np.ascontiguousarray(e, dtype=np.float64)
+
     # Interpolate PCV and map PCO on line-of-sight vector
     #
-    dant = np.zeros(len(sigs))
+    dant = np.full(len(sigs), np.nan)
+    offsets = []
+    pcv_vals = []
+    valid_idx = []
+
     for i, sig_ in enumerate(sigs):
 
         # Substitute signal if not available
         #
         sig = substSigTx(ant, sig_)
 
-        # Satellite PCO in local antenna frame
-        #
-        off = ant.off[sig] - off0
-
-        # Convert satellite PCO from antenna frame into ECEF frame
-        #
-        pco_v = off@A
-
-        # Interpolate PCV and map PCO on line-of-sight vector
+        # Skip if PCO/PCV missing
         #
         if sig not in ant.off or sig not in ant.var:
-            dant[i] = None
-        else:
-            pcv = np.interp(za, za_t, ant.var[sig])
-            pco = -np.dot(pco_v, -e)
-            dant[i] = (pco+pcv)*1e-3
+            continue
+
+        offsets.append(np.ascontiguousarray(ant.off[sig], dtype=np.float64))
+        pcv_vals.append(np.ascontiguousarray(ant.var[sig], dtype=np.float64))
+        valid_idx.append(i)
+
+    if offsets:
+        offsets_arr = np.ascontiguousarray(np.vstack(offsets))
+        pcv_arr = np.ascontiguousarray(np.vstack(pcv_vals))
+        corrections = _ant_model_tx_batch(
+            e,
+            float(za),
+            za_t,
+            offsets_arr,
+            pcv_arr,
+            A,
+            off0,
+        )
+        for idx, val in zip(valid_idx, corrections):
+            dant[idx] = val
 
     return dant
 
@@ -885,7 +902,7 @@ def antModelRx(nav, pos, e, sigs, rtype=1):
 
     # Convert LOS vector to local antenna frame
     #
-    e = ecef2enu(pos, e)
+    e = np.ascontiguousarray(ecef2enu(pos, e), dtype=np.float64)
 
     # Select rover or base antenna
     #
@@ -896,26 +913,43 @@ def antModelRx(nav, pos, e, sigs, rtype=1):
 
     # Elevation angle, zenith angle and zenith angle grid
     #
-    za = np.rad2deg(np.arccos(e[2]))
-    za_t = np.arange(ant.zen[0], ant.zen[1]+ant.zen[2], ant.zen[2])
+    cos_za = np.clip(e[2], -1.0, 1.0)
+    za = np.rad2deg(np.arccos(cos_za))
+    za_t = np.arange(ant.zen[0], ant.zen[1]+ant.zen[2], ant.zen[2], dtype=np.float64)
+    za_t = np.ascontiguousarray(za_t)
 
     # Loop over signals
     #
-    dant = np.zeros(len(sigs))
+    dant = np.full(len(sigs), np.nan)
+    offsets = []
+    pcv_vals = []
+    valid_idx = []
+
     for i, sig_ in enumerate(sigs):
 
         # Substitute signal if not available
         #
         sig = substSigRx(ant, sig_)
 
-        # Interpolate PCV and map PCO on line-of-sight vector
-        #
         if sig not in ant.off or sig not in ant.var:
-            dant[i] = None
-        else:
-            pcv = np.interp(za, za_t, ant.var[sig])
-            pco = -np.dot(ant.off[sig], e)
-            dant[i] = (pco+pcv)*1e-3
+            continue
+
+        offsets.append(np.ascontiguousarray(ant.off[sig], dtype=np.float64))
+        pcv_vals.append(np.ascontiguousarray(ant.var[sig], dtype=np.float64))
+        valid_idx.append(i)
+
+    if offsets:
+        offsets_arr = np.ascontiguousarray(np.vstack(offsets))
+        pcv_arr = np.ascontiguousarray(np.vstack(pcv_vals))
+        corrections = _ant_model_rx_batch(
+            e,
+            float(za),
+            za_t,
+            offsets_arr,
+            pcv_arr,
+        )
+        for idx, val in zip(valid_idx, corrections):
+            dant[idx] = val
 
     return dant
 
@@ -1461,4 +1495,43 @@ if __name__ == '__main__':
         rsun, rmoon, _ = sunmoonpos(epoch2time(ep1), erpv, True, True)
         assert np.all(abs((rsun-rs)/rsun) < 0.03)
         assert np.all(abs((rmoon-rm)/rmoon) < 0.03)
+@njit(cache=True)
+def _pco_pcv_interp(zenith_angle_deg, zenith_grid, var_values):
+    return np.interp(zenith_angle_deg, zenith_grid, var_values)
 
+
+@njit(cache=True)
+def _apply_offset(off_vec, enu_vec):
+    return -np.dot(off_vec, enu_vec)
+
+
+@njit(cache=True)
+def _ant_model_rx_batch(e_local, zenith_angle, zenith_grid, offsets, var_matrix):
+    n = offsets.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        pcv = _pco_pcv_interp(zenith_angle, zenith_grid, var_matrix[i, :])
+        pco = _apply_offset(offsets[i, :], e_local)
+        out[i] = (pco + pcv) * 1e-3
+    return out
+
+
+@njit(cache=True)
+def _ant_model_tx_batch(
+    e_los,
+    zenith_angle,
+    zenith_grid,
+    offsets,
+    var_matrix,
+    rot_matrix,
+    ref_offset,
+):
+    n = offsets.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        off_vec = offsets[i, :] - ref_offset
+        pco_vec = off_vec @ rot_matrix
+        pcv = _pco_pcv_interp(zenith_angle, zenith_grid, var_matrix[i, :])
+        pco = _apply_offset(pco_vec, -e_los)
+        out[i] = (pco + pcv) * 1e-3
+    return out

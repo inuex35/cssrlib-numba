@@ -3,17 +3,21 @@ module for standard PPP positioning
 """
 
 import numpy as np
+from numba import njit
 
 from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
-from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, geodist, satazel
-from cssrlib.gnss import time2str, timediff, gpst2utc, tropmapf, uIonoModel
+from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, time2str, timediff
+from cssrlib.gnss import gpst2utc, uIonoModel, time2doy
 from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
 from cssrlib.ppp import shapiro, windupcorr
 from cssrlib.peph import antModelRx, antModelTx
 from cssrlib.cssrlib import sCType
 from cssrlib.cssrlib import sCSSRTYPE as sc
 from cssrlib.mlambda import mlambda
+from cssrlib.atmosphere import tropmapf_niell
+from cssrlib.constants import CLIGHT, GME
+from cssrlib.geometry import geodist as geodist_fast, satazel as satazel_fast
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
@@ -22,6 +26,254 @@ fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
 fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
 fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
     "{:10.3f} {:10.3f} {:10.3f}\n"
+
+_SIG0_TABLE = {
+    sc.QZS_MADOCA: {
+        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+        uGNSS.GLO: (rSigRnx("RC1C"), rSigRnx("RC2C")),
+        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+        uGNSS.QZS: (rSigRnx("JC1C"), rSigRnx("JC2S")),
+    },
+    sc.GAL_HAS_SIS: {
+        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC7Q")),
+    },
+    sc.GAL_HAS_IDD: {
+        uGNSS.GPS: (rSigRnx("GC1C"),),
+        uGNSS.GLO: (rSigRnx("RC1C"),),
+        uGNSS.GAL: (rSigRnx("EC1C"),),
+        uGNSS.BDS: (rSigRnx("CC2I"),),
+        uGNSS.QZS: (rSigRnx("JC1C"),),
+    },
+    sc.IGS_SSR: {
+        uGNSS.GPS: (rSigRnx("GC1C"),),
+        uGNSS.GLO: (rSigRnx("RC1C"),),
+        uGNSS.GAL: (rSigRnx("EC1C"),),
+        uGNSS.BDS: (rSigRnx("CC2I"),),
+        uGNSS.QZS: (rSigRnx("JC1C"),),
+    },
+    sc.RTCM3_SSR: {
+        uGNSS.GPS: (rSigRnx("GC1C"),),
+        uGNSS.GLO: (rSigRnx("RC1C"),),
+        uGNSS.GAL: (rSigRnx("EC1C"),),
+        uGNSS.BDS: (rSigRnx("CC2I"),),
+        uGNSS.QZS: (rSigRnx("JC1C"),),
+    },
+    sc.BDS_PPP: {
+        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+        uGNSS.BDS: (rSigRnx("CC6I"),),
+    },
+    sc.QZS_CLAS: {
+        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+    },
+    sc.PVS_PPP: {
+        uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
+        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+        uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
+    },
+    sc.SBAS_L1: {
+        uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
+        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+        uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
+    },
+    sc.SBAS_L5: {
+        uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
+        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+        uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
+    },
+}
+
+TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
+TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
+
+
+@njit(cache=True)
+def _gather_or_zero(values, indices):
+    n = indices.size
+    out = np.zeros(n)
+    size = values.size
+    for i in range(n):
+        idx = indices[i]
+        if idx >= 0 and idx < size:
+            out[i] = values[idx]
+    return out
+
+
+@njit(cache=True)
+def _range_corrections(trop, iono, antr_pr, antr_cp, ants_pr, ants_cp,
+                       cbias, pbias, phw):
+    prc = trop + antr_pr + ants_pr + iono - cbias
+    cpc = trop + antr_cp + ants_cp - iono - pbias + phw
+    return prc, cpc
+
+
+@njit(cache=True)
+def _qc_signal_checks(P_row, L_row, S_row, lli_row, cnr_thresholds):
+    nf = P_row.size
+    result = np.zeros(nf, dtype=np.int64)
+    for f in range(nf):
+        if lli_row[f] == 1:
+            result[f] = 1
+            continue
+        if P_row[f] == 0.0:
+            result[f] = 2
+            continue
+        if L_row[f] == 0.0:
+            result[f] = 3
+            continue
+        if S_row[f] < cnr_thresholds[f]:
+            result[f] = 4
+            continue
+    return result
+
+
+@njit(cache=True)
+def _gf_slip_check(L1, L2, lam1, lam2, gf_prev, thresslip):
+    gf1 = 0.0
+    slip = False
+    if L1 != 0.0 and L2 != 0.0:
+        gf1 = L1*lam1 - L2*lam2
+        if gf_prev != 0.0 and gf1 != 0.0 and abs(gf1-gf_prev) > thresslip:
+            slip = True
+    return gf1, slip
+
+
+@njit(cache=True)
+def _fill_residual_row(y_row, lam, L_vals, P_vals, col_idx, base_range, cpc_row, prc_row):
+    nf = lam.size
+    for f in range(nf):
+        if col_idx[f] < 0:
+            continue
+        y_row[f] = L_vals[f]*lam[f] - (base_range + cpc_row[f])
+        y_row[f+nf] = P_vals[f] - (base_range + prc_row[f])
+
+
+@njit(cache=True)
+def _compute_bias_bsx(osb_values, ns2m, nf):
+    out = np.zeros(nf, dtype=np.float64)
+    count = nf if nf < osb_values.size else osb_values.size
+    for i in range(count):
+        out[i] = -ns2m * osb_values[i]
+    return out
+
+
+@njit(cache=True)
+def _combine_cssr_bias(global_bias, regional_bias, nf, flip):
+    out = np.zeros(nf, dtype=np.float64)
+    gsize = global_bias.size
+    rsize = regional_bias.size
+    scale = -1.0 if flip else 1.0
+    for i in range(nf):
+        val = 0.0
+        if i < gsize:
+            val += global_bias[i]
+        if i < rsize:
+            val += regional_bias[i]
+        out[i] = scale * val
+    return out
+
+
+@njit(cache=True)
+def _tropmapf_dispatch_ppp(doy, pos, el, model):
+    if model == TROPO_MODEL_HOPF:
+        mapfh = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 72.0) ** 2))
+        mapfw = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 120.0) ** 2))
+        return mapfh, mapfw
+    elif model == TROPO_MODEL_SAAST:
+        return tropmapf_niell(doy, pos, el)
+    return 0.0, 0.0
+
+
+@njit(cache=True)
+def _shapiro_delay(rsat, rrcv):
+    rs = np.linalg.norm(rsat)
+    rr = np.linalg.norm(rrcv)
+    rrs = np.linalg.norm(rsat - rrcv)
+    denom = rs + rr - rrs
+    if denom <= 0.0:
+        denom = 1e-12
+    return (2.0 * GME / (CLIGHT * CLIGHT)) * np.log((rs + rr + rrs) / denom)
+
+
+@njit(cache=True)
+def _zdres_geometry_precompute(rs, rr, pos, elmin, trp_model, doy):
+    n = rs.shape[0]
+    geom = np.zeros(n, dtype=np.float64)
+    los = np.zeros((n, 3), dtype=np.float64)
+    el = np.zeros(n, dtype=np.float64)
+    mapfh = np.zeros(n, dtype=np.float64)
+    mapfw = np.zeros(n, dtype=np.float64)
+    relatv = np.zeros(n, dtype=np.float64)
+    valid = np.zeros(n, dtype=np.bool_)
+
+    for i in range(n):
+        rng, los_vec = geodist_fast(rs[i, :], rr)
+        geom[i] = rng
+        los[i, :] = los_vec
+        _, el_val = satazel_fast(pos, los_vec)
+        el[i] = el_val
+        if el_val < elmin:
+            continue
+        valid[i] = True
+        mf, mw = _tropmapf_dispatch_ppp(doy, pos, el_val, trp_model)
+        mapfh[i] = mf
+        mapfw[i] = mw
+        relatv[i] = _shapiro_delay(rs[i, :], rr)
+
+    return geom, los, el, mapfh, mapfw, relatv, valid
+
+
+@njit(cache=True)
+def _zdres_core(
+    y_row,
+    lam,
+    L_vals,
+    P_vals,
+    col_idx,
+    base_range,
+    trop,
+    iono,
+    antr_pr,
+    antr_cp,
+    ants_pr,
+    ants_cp,
+    cbias,
+    pbias,
+    phw,
+    ):
+    prc_row, cpc_row = _range_corrections(
+        trop,
+        iono,
+        antr_pr,
+        antr_cp,
+        ants_pr,
+        ants_cp,
+        cbias,
+        pbias,
+        phw,
+    )
+    _fill_residual_row(y_row, lam, L_vals, P_vals, col_idx, base_range, cpc_row, prc_row)
+    return prc_row, cpc_row
+
+
+def antModelRx_fast(nav, pos, e_vec, sigs, rtype):
+    """Return contiguous receiver antenna corrections with NaNs zeroed."""
+
+    vals = antModelRx(nav, pos, e_vec, sigs, rtype)
+    if vals is None:
+        return np.zeros(len(sigs), dtype=np.float64)
+    arr = np.asarray(vals, dtype=np.float64)
+    return np.nan_to_num(arr, nan=0.0)
+
+
+def antModelTx_fast(nav, e_vec, sigs, sat, time, rs, sig0=None):
+    """Return contiguous satellite antenna corrections with NaNs zeroed."""
+
+    vals = antModelTx(nav, e_vec, sigs, sat, time, rs, sig0)
+    if vals is None:
+        return np.zeros(len(sigs), dtype=np.float64)
+    arr = np.asarray(vals, dtype=np.float64)
+    return np.nan_to_num(arr, nan=0.0)
 
 
 class pppos():
@@ -488,15 +740,35 @@ class pppos():
         # Geodetic position
         #
         pos = ecef2pos(rr_)
+        pos_arr = np.asarray(pos, dtype=np.float64)
 
         # Zenith tropospheric dry and wet delays at user position
         #
         trop_hs, trop_wet, _ = tropmodel(obs.t, pos,
                                          model=self.nav.trpModel)
+        doy = time2doy(obs.t)
+        rs_matrix = np.asarray(rs, dtype=np.float64)
+        if rs_matrix.ndim == 1:
+            rs_matrix = rs_matrix.reshape(1, -1)
+        rs_arr = np.ascontiguousarray(rs_matrix[:, 0:3])
+        rr_vec = np.ascontiguousarray(np.asarray(rr_, dtype=np.float64))
+        geom_all, los_all, el_all, mapfh_all, mapfw_all, relatv_all, valid_mask = _zdres_geometry_precompute(
+            rs_arr,
+            rr_vec,
+            pos_arr,
+            float(self.nav.elmin),
+            int(self.nav.trpModel),
+            float(doy),
+        )
 
+        inet_sat_index = {}
         if self.nav.trop_opt == 2 or self.nav.iono_opt == 2:  # from cssr
             inet = cs.find_grid_index(pos)
             dlat, dlon = cs.get_dpos(pos)
+            if inet > 0:
+                sat_array = np.array(cs.lc[inet].sat_n, dtype=np.int64)
+                for idx, sat_id in enumerate(sat_array):
+                    inet_sat_index[int(sat_id)] = idx
         else:
             inet = -1
 
@@ -512,6 +784,18 @@ class pppos():
 
         cpc = np.zeros((n, nf))
         prc = np.zeros((n, nf))
+        lam_all = np.zeros((n, nf), dtype=np.float64)
+        col_idx_all = -np.ones((n, nf), dtype=np.int64)
+        L_sel_all = np.zeros((n, nf), dtype=np.float64)
+        P_sel_all = np.zeros((n, nf), dtype=np.float64)
+        iono_all = np.zeros((n, nf), dtype=np.float64)
+        antr_pr_all = np.zeros((n, nf), dtype=np.float64)
+        antr_cp_all = np.zeros((n, nf), dtype=np.float64)
+        ants_pr_all = np.zeros((n, nf), dtype=np.float64)
+        ants_cp_all = np.zeros((n, nf), dtype=np.float64)
+        cbias_all = np.zeros((n, nf), dtype=np.float64)
+        pbias_all = np.zeros((n, nf), dtype=np.float64)
+        phw_all = np.zeros((n, nf), dtype=np.float64)
 
         for i in range(n):
 
@@ -531,19 +815,18 @@ class pppos():
             sigsPR = obs.sig[sys][uTYP.C]
             sigsCP = obs.sig[sys][uTYP.L]
 
-            max_cols = min(obs.L.shape[1], obs.P.shape[1]) if obs.L.ndim == 2 and obs.P.ndim == 2 else 0
-            col_indices = []
-            for col in range(max_cols):
-                if obs.L.shape[1] <= col or obs.P.shape[1] <= col:
-                    continue
-                if obs.L[i, col] != 0.0 and obs.P[i, col] != 0.0:
-                    col_indices.append(col)
-                if len(col_indices) >= nf:
-                    break
-
-            available_nf = len(col_indices)
-            if available_nf == 0:
+            max_cols = obs.L.shape[1] if obs.L.ndim == 2 else 0
+            if obs.P.ndim == 2:
+                max_cols = min(max_cols, obs.P.shape[1])
+            L_row = obs.L[i, :] if obs.L.ndim == 2 else obs.L[i]
+            P_row = obs.P[i, :] if obs.P.ndim == 2 else obs.P[i]
+            valid = np.nonzero(
+                (L_row[:max_cols] != 0.0) & (P_row[:max_cols] != 0.0)
+            )[0]
+            if valid.size == 0:
                 continue
+            col_indices = valid[:nf]
+            available_nf = col_indices.size
 
             # Wavelength
             #
@@ -556,40 +839,73 @@ class pppos():
                 else:
                     lam[f_idx] = sigsCP[col].wavelength()
                     frq[f_idx] = sigsCP[col].frequency()
+            col_idx_arr = -np.ones(nf, dtype=np.int64)
+            col_idx_arr[:available_nf] = col_indices
+            lam_all[i, :] = lam
+            col_idx_all[i, :] = col_idx_arr
+            L_row_arr_full = np.asarray(L_row, dtype=np.float64)
+            P_row_arr_full = np.asarray(P_row, dtype=np.float64)
+            L_sel = np.zeros(nf, dtype=np.float64)
+            P_sel = np.zeros(nf, dtype=np.float64)
+            for sel_idx in range(nf):
+                col_val = col_idx_arr[sel_idx]
+                if col_val >= 0:
+                    if col_val < L_row_arr_full.size:
+                        L_sel[sel_idx] = L_row_arr_full[col_val]
+                    if col_val < P_row_arr_full.size:
+                        P_sel[sel_idx] = P_row_arr_full[col_val]
+            L_sel_all[i, :] = L_sel
+            P_sel_all[i, :] = P_sel
 
-            cbias = np.zeros(self.nav.nf)
-            pbias = np.zeros(self.nav.nf)
+            cbias = np.zeros(self.nav.nf, dtype=np.float64)
+            pbias = np.zeros(self.nav.nf, dtype=np.float64)
 
-            if self.nav.ephopt == 4:  # from Bias-SINEX
-
-                # Code and phase signal bias, converted from [ns] to [m]
-                # Note: IGS uses sign convention different with RTCM
-                cbias = np.array(
-                    [-bsx.getosb(sat, obs.t, s)*ns2m for s in sigsPR])
+            if self.nav.ephopt == 4:
+                cbias_vals = np.asarray(
+                    [bsx.getosb(sat, obs.t, s) for s in sigsPR],
+                    dtype=np.float64,
+                )
+                cbias = _compute_bias_bsx(
+                    np.ascontiguousarray(cbias_vals, dtype=np.float64),
+                    float(ns2m),
+                    int(self.nav.nf),
+                )
                 if sys != uGNSS.GLO:
-                    pbias = np.array(
-                        [-bsx.getosb(sat, obs.t, s)*ns2m for s in sigsCP])
-
-            elif cs is not None:  # from CSSR
-
-                if cs.lc[0].cstat & (1 << sCType.CBIAS) == (1 << sCType.CBIAS):
-                    cbias = self.find_bias(cs, sigsPR, sat)
-
-                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.CBIAS) == \
-                        (1 << sCType.CBIAS):
-                    cbias += self.find_bias(cs, sigsPR, sat, inet)
-
-                if cs.lc[0].cstat & (1 << sCType.PBIAS) == (1 << sCType.PBIAS):
-                    pbias = self.find_bias(cs, sigsCP, sat)
-
-                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.PBIAS) == \
-                        (1 << sCType.PBIAS):
-                    pbias += self.find_bias(cs, sigsCP, sat, inet)
-
-                # note: some services use sign convention different with RTCM
-                if cs.cssrmode in [sc.QZS_CLAS, sc.BDS_PPP, sc.PVS_PPP]:
-                    pbias = -pbias
-                    cbias = -cbias
+                    pbias_vals = np.asarray(
+                        [bsx.getosb(sat, obs.t, s) for s in sigsCP],
+                        dtype=np.float64,
+                    )
+                    pbias = _compute_bias_bsx(
+                        np.ascontiguousarray(pbias_vals, dtype=np.float64),
+                        float(ns2m),
+                        int(self.nav.nf),
+                    )
+            elif cs is not None:
+                cbias_global = np.zeros(len(sigsPR), dtype=np.float64)
+                cbias_regional = np.zeros(len(sigsPR), dtype=np.float64)
+                pbias_global = np.zeros(len(sigsCP), dtype=np.float64)
+                pbias_regional = np.zeros(len(sigsCP), dtype=np.float64)
+                if cs.lc[0].cstat & (1 << sCType.CBIAS):
+                    cbias_global += self.find_bias(cs, sigsPR, sat)
+                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.CBIAS):
+                    cbias_regional += self.find_bias(cs, sigsPR, sat, inet)
+                if cs.lc[0].cstat & (1 << sCType.PBIAS):
+                    pbias_global += self.find_bias(cs, sigsCP, sat)
+                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.PBIAS):
+                    pbias_regional += self.find_bias(cs, sigsCP, sat, inet)
+                flip = cs.cssrmode in (sc.QZS_CLAS, sc.BDS_PPP, sc.PVS_PPP)
+                cbias = _combine_cssr_bias(
+                    np.ascontiguousarray(cbias_global, dtype=np.float64),
+                    np.ascontiguousarray(cbias_regional, dtype=np.float64),
+                    int(self.nav.nf),
+                    bool(flip),
+                )
+                pbias = _combine_cssr_bias(
+                    np.ascontiguousarray(pbias_global, dtype=np.float64),
+                    np.ascontiguousarray(pbias_regional, dtype=np.float64),
+                    int(self.nav.nf),
+                    bool(flip),
+                )
 
             # Check for invalid biases
             #
@@ -601,19 +917,21 @@ class pppos():
             # Geometric distance corrected for Earth rotation
             # during flight time
             #
-            r, e[i, :] = geodist(rs[i, :], rr_)
-            _, el[i] = satazel(pos, e[i, :])
-            if el[i] < self.nav.elmin:
+            if not valid_mask[i]:
                 continue
+
+            r = geom_all[i]
+            e[i, :] = los_all[i, :]
+            el[i] = el_all[i]
 
             # Shapiro relativistic effect
             #
-            relatv = shapiro(rs[i, :], rr_)
+            relatv = relatv_all[i]
 
             # Tropospheric delay mapping functions
             #
-            mapfh, mapfw = tropmapf(obs.t, pos, el[i],
-                                    model=self.nav.trpModel)
+            mapfh = mapfh_all[i]
+            mapfw = mapfw_all[i]
 
             # Tropospheric delay
             #
@@ -624,9 +942,12 @@ class pppos():
 
             # Ionospheric delay
             #
-            if self.nav.iono_opt == 2 and inet > 0:  # from cssr
-                idx_l = cs.lc[inet].sat_n.index(sat)
-                iono = np.array([40.3e16/(f*f)*stec[idx_l] for f in frq])
+            if self.nav.iono_opt == 2 and inet > 0:
+                idx_l = inet_sat_index.get(int(sat), -1)
+                if idx_l >= 0:
+                    iono = 40.3e16/(frq*frq)*stec[idx_l]
+                else:
+                    iono = np.zeros(nf)
             else:
                 iono = np.zeros(nf)
 
@@ -646,101 +967,43 @@ class pppos():
             # Select APC reference signals
             #
             sig0 = None
-            if cs is not None:
-
-                if cs.cssrmode == sc.QZS_MADOCA:
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1W"), rSigRnx("GC2W"))
-                    elif sys == uGNSS.GLO:
-                        sig0 = (rSigRnx("RC1C"), rSigRnx("RC2C"))
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"), rSigRnx("EC5Q"))
-                    elif sys == uGNSS.QZS:
-                        sig0 = (rSigRnx("JC1C"), rSigRnx("JC2S"))
-
-                elif cs.cssrmode == sc.GAL_HAS_SIS:
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1W"), rSigRnx("GC2W"))
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"), rSigRnx("EC7Q"))
-
-                elif cs.cssrmode in (sc.GAL_HAS_IDD, sc.IGS_SSR, sc.RTCM3_SSR):
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1C"),)
-                    elif sys == uGNSS.GLO:
-                        sig0 = (rSigRnx("RC1C"),)
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"),)
-                    elif sys == uGNSS.BDS:
-                        sig0 = (rSigRnx("CC2I"),)
-                    elif sys == uGNSS.QZS:
-                        sig0 = (rSigRnx("JC1C"),)
-
-                elif cs.cssrmode == sc.BDS_PPP:
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1W"), rSigRnx("GC2W"))
-                    elif sys == uGNSS.BDS:
-                        sig0 = (rSigRnx("CC6I"),)
-
-                elif cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1C"), rSigRnx("GC5Q"))
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"), rSigRnx("EC5Q"))
-                    elif sys == uGNSS.SBS:
-                        sig0 = (rSigRnx("SC1C"), rSigRnx("SC5Q"))
+            if cs is not None and cs.cssrmode in _SIG0_TABLE:
+                sig0 = _SIG0_TABLE[cs.cssrmode].get(sys, None)
 
             # Receiver/satellite antenna offset
             #
             if self.nav.rcv_ant is None:
-                antrPR_list = [0.0 for _ in range(available_nf)]
-                antrCP_list = [0.0 for _ in range(available_nf)]
+                antrPR = np.zeros(nf)
+                antrCP = np.zeros(nf)
             else:
-                ant_rx = antModelRx(self.nav, pos, e[i, :], sigsPR, rtype)
-                antrPR_list = [ant_rx[col] for col in col_indices]
-                ant_rx_cp = antModelRx(self.nav, pos, e[i, :], sigsCP, rtype)
-                antrCP_list = [ant_rx_cp[col] for col in col_indices]
-            antrPR = np.zeros(nf)
-            antrCP = np.zeros(nf)
-            antrPR[:available_nf] = antrPR_list
-            antrCP[:available_nf] = antrCP_list
-
-            if self.nav.ephopt == 4:
-
-                antsPR_all = antModelTx(
-                    self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :])
-                antsPR_list = [antsPR_all[col] for col in col_indices]
-                antsCP_all = antModelTx(
-                    self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :])
-                antsCP_list = [antsCP_all[col] for col in col_indices]
-
-            elif cs is not None and cs.cssrmode in (sc.QZS_MADOCA,
-                                                    sc.GAL_HAS_SIS,
-                                                    sc.GAL_HAS_IDD,
-                                                    sc.IGS_SSR,
-                                                    sc.RTCM3_SSR,
-                                                    sc.BDS_PPP,
-                                                    sc.PVS_PPP):
-
-                antsPR_all = antModelTx(self.nav, e[i, :], sigsPR,
-                                    sat, obs.t, rs[i, :], sig0)
-                antsPR_list = [antsPR_all[col] for col in col_indices]
-                antsCP_all = antModelTx(self.nav, e[i, :], sigsCP,
-                                    sat, obs.t, rs[i, :], sig0)
-                antsCP_list = [antsCP_all[col] for col in col_indices]
-
-            else:
-                antsPR_list = [0.0 for _ in sigsPR[:available_nf]]
-                antsCP_list = [0.0 for _ in sigsCP[:available_nf]]
+                ant_rx_pr = antModelRx_fast(self.nav, pos, e[i, :], sigsPR, rtype)
+                ant_rx_cp = antModelRx_fast(self.nav, pos, e[i, :], sigsCP, rtype)
+                antrPR = _gather_or_zero(ant_rx_pr, col_idx_arr)
+                antrCP = _gather_or_zero(ant_rx_cp, col_idx_arr)
 
             antsPR = np.zeros(nf)
             antsCP = np.zeros(nf)
-            antsPR[:available_nf] = antsPR_list
-            antsCP[:available_nf] = antsCP_list
+            if self.nav.ephopt == 4:
+                antsPR_all = antModelTx_fast(
+                    self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :]
+                )
+                antsCP_all = antModelTx_fast(
+                    self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :]
+                )
+                antsPR = _gather_or_zero(antsPR_all, col_idx_arr)
+                antsCP = _gather_or_zero(antsCP_all, col_idx_arr)
+            elif cs is not None and cs.cssrmode in (
+                sc.QZS_MADOCA, sc.GAL_HAS_SIS, sc.GAL_HAS_IDD,
+                sc.IGS_SSR, sc.RTCM3_SSR, sc.BDS_PPP, sc.PVS_PPP
+            ) and sig0 is not None:
+                antsPR_all = antModelTx_fast(
+                    self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :], sig0
+                )
+                antsCP_all = antModelTx_fast(
+                    self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :], sig0
+                )
+                antsPR = _gather_or_zero(antsPR_all, col_idx_arr)
+                antsCP = _gather_or_zero(antsCP_all, col_idx_arr)
 
             # Check for invalid values
             #
@@ -748,21 +1011,39 @@ class pppos():
                antsPR is None or antsCP is None:
                 continue
 
-            # Range correction
-            #
-            prc[i, :] = trop + antrPR + antsPR + iono - cbias
-            cpc[i, :] = trop + antrCP + antsCP - iono - pbias + phw
+            lam_vec = lam_all[i, :]
+            col_idx_vec = col_idx_all[i, :]
+            L_sel_vec = L_sel_all[i, :]
+            P_sel_vec = P_sel_all[i, :]
+            iono_vec = iono_all[i, :]
+            antr_pr_vec = np.ascontiguousarray(antr_pr_all[i, :], dtype=np.float64)
+            antr_cp_vec = np.ascontiguousarray(antr_cp_all[i, :], dtype=np.float64)
+            ants_pr_vec = np.ascontiguousarray(ants_pr_all[i, :], dtype=np.float64)
+            ants_cp_vec = np.ascontiguousarray(ants_cp_all[i, :], dtype=np.float64)
+            cbias_vec = np.ascontiguousarray(cbias_all[i, :], dtype=np.float64)
+            pbias_vec = np.ascontiguousarray(pbias_all[i, :], dtype=np.float64)
+            phw_vec = np.ascontiguousarray(phw_all[i, :], dtype=np.float64)
 
-            r += relatv - _c*dts[i]
-
-            for f in range(nf):
-                if f >= available_nf:
-                    continue
-                col = col_indices[f]
-                if obs.L.shape[1] <= col or obs.P.shape[1] <= col:
-                    continue
-                y[i, f] = obs.L[i, col]*lam[f]-(r+cpc[i, f])
-                y[i, f+nf] = obs.P[i, col]-(r+prc[i, f])
+            base_range = r + relatv - _c*dts[i]
+            prc_row, cpc_row = _zdres_core(
+                y[i],
+                lam_vec,
+                L_sel_vec,
+                P_sel_vec,
+                col_idx_vec,
+                float(base_range),
+                float(trop),
+                iono_vec,
+                antr_pr_vec,
+                antr_cp_vec,
+                ants_pr_vec,
+                ants_cp_vec,
+                cbias_vec,
+                pbias_vec,
+                phw_vec,
+            )
+            prc[i, :] = prc_row
+            cpc[i, :] = cpc_row
 
         return y, e, el
 
@@ -819,6 +1100,16 @@ class pppos():
         # Geodetic position
         #
         pos = ecef2pos(x[0:3])
+        pos_arr = np.asarray(pos, dtype=np.float64)
+        doy = time2doy(obs.t)
+        mapfh_sd = np.zeros(ns, dtype=np.float64)
+        mapfw_sd = np.zeros(ns, dtype=np.float64)
+        for idx_sat in range(ns):
+            if el[idx_sat] <= 0.0:
+                continue
+            mf, mw = _tropmapf_dispatch_ppp(float(doy), pos_arr, float(el[idx_sat]), int(self.nav.trpModel))
+            mapfh_sd[idx_sat] = mf
+            mapfw_sd[idx_sat] = mw
 
         # Loop over constellations
         #
@@ -902,10 +1193,8 @@ class pppos():
 
                         # SD troposphere
                         #
-                        _, mapfwi = tropmapf(
-                            obs.t, pos, el[i], model=self.nav.trpModel)
-                        _, mapfwj = tropmapf(
-                            obs.t, pos, el[j], model=self.nav.trpModel)
+                        mapfwi = mapfw_sd[i]
+                        mapfwj = mapfw_sd[j]
 
                         idx_i = self.IT(self.nav.na)
                         H[nv, idx_i] = mapfwi - mapfwj
@@ -1264,8 +1553,8 @@ class pppos():
 
             # Check elevation angle
             #
-            _, e = geodist(rs[j, :], rr_)
-            _, el = satazel(pos, e)
+            _, e = geodist_fast(rs[j, :], rr_)
+            _, el = satazel_fast(pos, e)
             if el < self.nav.elmin:
                 self.nav.edt[i][:] = 1
                 if self.nav.monlevel > 0:
@@ -1281,57 +1570,43 @@ class pppos():
             sigsCP = obs.sig[sys_i][uTYP.L]
             sigsCN = obs.sig[sys_i][uTYP.S]
 
-            # Loop over signals
-            #
+            cnr_thresholds = np.zeros(self.nav.nf, dtype=np.float64)
             for f in range(self.nav.nf):
+                cnr_thresholds[f] = (self.nav.cnr_min_gpy
+                                     if sigsCN[f].isGPS_PY()
+                                     else self.nav.cnr_min)
 
-                # Cycle  slip check by LLI
-                #
-                if obs.lli[j, f] == 1:
-                    self.nav.edt[i, f] = 1
-                    if self.nav.monlevel > 0:
-                        self.nav.fout.write("{}  {} - edit {:4s} - LLI\n"
-                                            .format(time2str(obs.t),
-                                                    sat2id(sat_i),
-                                                    sigsCP[f].str()))
-                    continue
+            P_row = obs.P[j, :self.nav.nf]
+            L_row = obs.L[j, :self.nav.nf]
+            S_row = obs.S[j, :self.nav.nf]
+            lli_row = obs.lli[j, :self.nav.nf]
+            qc_codes = _qc_signal_checks(
+                np.asarray(P_row, dtype=np.float64),
+                np.asarray(L_row, dtype=np.float64),
+                np.asarray(S_row, dtype=np.float64),
+                np.asarray(lli_row, dtype=np.float64),
+                cnr_thresholds,
+            )
 
-                # Check for measurement consistency
-                #
-                if obs.P[j, f] == 0.0:
-                    self.nav.edt[i, f] = 1
-                    if self.nav.monlevel > 0:
-                        self.nav.fout.write(
-                            "{}  {} - edit {:4s} - invalid PR obs\n"
-                            .format(time2str(obs.t),
-                                    sat2id(sat_i),
-                                    sigsPR[f].str()))
+            for f in range(self.nav.nf):
+                code = int(qc_codes[f])
+                if code == 0:
                     continue
-
-                if obs.L[j, f] == 0.0:
-                    self.nav.edt[i, f] = 1
-                    if self.nav.monlevel > 0:
-                        self.nav.fout.write(
-                            "{}  {} - edit {:4s} - invalid CP obs\n"
-                            .format(time2str(obs.t),
-                                    sat2id(sat_i),
-                                    sigsCP[f].str()))
-                    continue
-
-                # Check C/N0
-                #
-                cnr_min = self.nav.cnr_min_gpy \
-                    if sigsCN[f].isGPS_PY() else self.nav.cnr_min
-                if obs.S[j, f] < cnr_min:
-                    self.nav.edt[i, f] = 1
-                    if self.nav.monlevel > 0:
-                        self.nav.fout.write(
-                            "{}  {} - edit {:4s} - low C/N0 {:4.1f} dB-Hz\n"
-                            .format(time2str(obs.t),
-                                    sat2id(sat_i),
-                                    sigsCN[f].str(),
-                                    obs.S[j, f]))
-                    continue
+                self.nav.edt[i, f] = 1
+                if self.nav.monlevel > 0:
+                    if code == 1:
+                        msg = "edit {:4s} - LLI".format(sigsCP[f].str())
+                    elif code == 2:
+                        msg = "edit {:4s} - invalid PR obs".format(
+                            sigsPR[f].str())
+                    elif code == 3:
+                        msg = "edit {:4s} - invalid CP obs".format(
+                            sigsCP[f].str())
+                    else:
+                        msg = "edit {:4s} - low C/N0 {:4.1f} dB-Hz".format(
+                            sigsCN[f].str(), obs.S[j, f])
+                    self.nav.fout.write("{}  {} - {}\n".format(
+                        time2str(obs.t), sat2id(sat_i), msg))
 
             # cycle-slip detection by geometry-free combination
             sig_table = obs.sig if hasattr(obs, 'sig') else None
@@ -1351,20 +1626,26 @@ class pppos():
                 else:
                     lam1 = sig1.wavelength()
                     lam2 = sig2.wavelength()
-                if L1R != 0.0 and L2R != 0.0:
-                    gf1 = (L1R*lam1-L2R*lam2)
-                    gf0 = self.nav.gf[sat_i]
-                    if gf1 != 0.0:
-                        self.nav.gf[sat_i] = gf1
-                    if gf0 != 0.0 and gf1 != 0.0 and \
-                            abs(gf1-gf0) > self.nav.thresslip:
-                        self.nav.edt[i, 0:2] = 1
-                        if self.nav.monlevel > 0:
-                            self.nav.fout.write(" {}  {} - edit {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
-                                                .format(time2str(obs.t),
-                                                        sat2id(sat_i),
-                                                        sig1.str(), gf0, gf1,
-                                                        gf0-gf1))
+                gf_prev = float(self.nav.gf[sat_i])
+                gf1, slip = _gf_slip_check(
+                    float(L1R),
+                    float(L2R),
+                    float(lam1),
+                    float(lam2),
+                    gf_prev,
+                    float(self.nav.thresslip),
+                )
+                if gf1 != 0.0:
+                    self.nav.gf[sat_i] = gf1
+                if slip:
+                    self.nav.edt[i, 0:2] = 1
+                    if self.nav.monlevel > 0:
+                        self.nav.fout.write(
+                            " {}  {} - edit {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
+                            .format(time2str(obs.t),
+                                    sat2id(sat_i),
+                                    sig1.str(), gf_prev, gf1,
+                                    gf_prev-gf1))
             else:
                 # Single frequency or missing signal metadata: skip GF slip test
                 obs.L = np.atleast_2d(obs.L)
