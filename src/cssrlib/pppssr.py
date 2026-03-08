@@ -1325,7 +1325,7 @@ class pppos():
                 #
                 cnr_min = self.nav.cnr_min_gpy \
                     if sigsCN[f].isGPS_PY() else self.nav.cnr_min
-                if obs.S[j, f] < cnr_min:
+                if obs.S[j, f]>0 and obs.S[j, f] < cnr_min:
                     self.nav.edt[i, f] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(

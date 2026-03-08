@@ -160,7 +160,7 @@ class Integrity():
     mod_t = ['BPSK(1)', 'BPSK(5)', 'BPSK(10)', 'BOC(1,1)', 'CBOC(6,1,1/11)',
              'AltBOC(15,10)', '', '']
 
-    atype_t = {0:"Circle", 1:"Polygon"}
+    atype_t = {0:"Validity Radius", 1:"Area Points"}
     #
     mm_model_t = ['GMM', 'Mats Brenner', 'Jahn']
     
@@ -767,7 +767,7 @@ class rtcmUtil:
         sys = uGNSS.NONE
         ssr = 0
         for sys_ in self.ssr_t.keys():
-            if msgtype >= self.ssr_t[sys_] and msgtype <= self.ssr_t[sys_]+6:
+            if msgtype >= self.ssr_t[sys_] and msgtype < self.ssr_t[sys_]+6:
                 sys = sys_
                 ssr = msgtype-self.ssr_t[sys_]+1
                 break
@@ -840,6 +840,8 @@ class rtcm(cssr, rtcmUtil):
         self.test_mode = False  # for interop testing in SC134
         
         self.mt_skip = [] # skip decode for the specified message types
+        
+        self.workaround_sc134 = False
 
     def ssig2rsig(self, sys: uGNSS, utyp=None, ssig=None):
         """ convert ssig to rSigRnx """
@@ -986,6 +988,8 @@ class rtcm(cssr, rtcmUtil):
             self.tod = bs.unpack_from('u17', msg, i)[0]     
             i += 17
             self.time = utc2gpst(glo2time(self.time, self.tod))
+            if self.workaround_sc134:
+                self.time = timeadd(self.time, -36) # work-around
         else:
             self.tow = bs.unpack_from('u20', msg, i)[0]   
             i += 20               
@@ -1481,7 +1485,7 @@ class rtcm(cssr, rtcmUtil):
             week, _ = time2bdt(gpst2bdt(gpst2time(self.week, tow)))
             time = bdt2gpst(bdt2time(week, tow))
         elif sys == uGNSS.GLO:
-            time = glo2time(self.time, tow)
+            time = utc2gpst(glo2time(self.time, tow))
         else:
             time = gpst2time(self.week, tow)
         return i, sys, time
@@ -1520,8 +1524,15 @@ class rtcm(cssr, rtcmUtil):
         sys, ssr = self.ssrtype(self.msgtype)
         if ssr > 0 or self.msgtype == 4076:
             sz = 20 if self.msgtype == 4076 or sys != uGNSS.GLO else 17
-            self.tow = bs.unpack_from('u'+str(sz), msg, i)[0]
-            return gpst2time(self.week, self.tow)
+            tow = bs.unpack_from('u'+str(sz), msg, i)[0]
+            if sys == uGNSS.GLO:
+                t = utc2gpst(glo2time(self.time, tow))
+                if self.workaround_sc134:
+                    t = timeadd(t, -36) # work-around on sc134
+                return t
+            else:
+                self.tow = tow
+                return gpst2time(self.week, self.tow)
 
         sys, nrtk = self.nrtktype(self.msgtype)
         if nrtk > 0:
@@ -1595,15 +1606,14 @@ class rtcm(cssr, rtcmUtil):
 
     def out_log_integ_head(self):
         vp = self.integ.vp_tbl[self.integ.vp]
-        self.fh.write(f" TOW (s): {self.integ.tow:9.3f}\n")
-        self.fh.write(f" Provider Id: {self.integ.pid}\n")
+        self.fh.write(f" ASP Id: {self.integ.pid}\n")
         self.fh.write(f" Validity Period [s]: {vp:4.1f}\n")
-        self.fh.write(f" Update rate interval [s]: {self.integ.udi:4.1f}\n")
+        self.fh.write(f" Update Interval [s]: {self.integ.udi:4.1f}\n")
         self.fh.write(f" Service Area ID: {self.integ.aid:d}\n")        
 
     def out_log_area_point(self):
         if self.integ.atype == 1: # lat/lon
-            self.fh.write(f" Number of Area Point: {self.integ.npnt}\n")                
+            self.fh.write(f" Number of Area Points: {self.integ.npnt}\n")                
             self.fh.write(" Area Point (lat, lon):\n")
             for pos in self.integ.pos_v:
                 self.fh.write(f" {pos[0]:15.9f} {pos[1]:15.9f}\n")
@@ -2201,8 +2211,12 @@ class rtcm(cssr, rtcmUtil):
 
         if self.subtype in (sRTCM.INTEG_SSR, sRTCM.INTEG_SSR_IONO,
                             sRTCM.INTEG_SSR_TROP):
-            self.out_log_integ_head()
-            
+            self.out_log_integ_head()            
+
+            self.fh.write(f" SSR Provider ID: {self.integ.pidssr}\n")
+            self.fh.write(f" SSR Solution ID: {self.integ.sidssr}\n")
+            self.fh.write(f" IOD SSR: {self.integ.iodssr}\n")
+
             self.fh.write(" {:20s}{:04x}\n".format("Constellation Mask:",
                                                    self.integ.mask_sys))
             self.fh.write(" IOD GNSS Mask: ")
@@ -3877,8 +3891,8 @@ class rtcm(cssr, rtcmUtil):
         i = self.decode_integ_head(msg, i)
         
         # SSR provider ID, solution type, iod
-        self.pid, self.sid, self.iodssr = bs.unpack_from(
-            'u16u4u4', msg, i)
+        self.integ.pidssr, self.integ.sidssr, self.integ.iodssr = \
+            bs.unpack_from('u16u4u4', msg, i)
         i += 24
 
         # GNSS Constellation Mask (DFi013)
