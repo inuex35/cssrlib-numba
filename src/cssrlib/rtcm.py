@@ -262,7 +262,9 @@ class Integrity():
         self.mask_sys = 0
 
         self.mm_param = None
-        
+
+        self.sat_e = [] # excluded satellites by SSR integrity flag
+
     def cnr_lvl(self, idx):
         """ get index to C/N level [dB-Hz] """
         cnr = -1
@@ -1605,9 +1607,8 @@ class rtcm(cssr, rtcmUtil):
                                                     self.lc[0].ura[sat_]))
 
     def out_log_integ_head(self):
-        vp = self.integ.vp_tbl[self.integ.vp]
         self.fh.write(f" ASP Id: {self.integ.pid}\n")
-        self.fh.write(f" Validity Period [s]: {vp:4.1f}\n")
+        self.fh.write(f" Validity Period [s]: {self.integ.vp:4.1f}\n")
         self.fh.write(f" Update Interval [s]: {self.integ.udi:4.1f}\n")
         self.fh.write(f" Service Area ID: {self.integ.aid:d}\n")        
 
@@ -1636,8 +1637,8 @@ class rtcm(cssr, rtcmUtil):
 
         if self.msgtype == 4076: # IGS-SSR
             self.fh.write(f" Message Type: IGS-SSR {self.igsssrt_t[self.subtype]} {sys2str(self.sysref)}\n")
-            
-        if sys > 0 and self.subtype not in [sRTCM.SSR_META, sRTCM.SSR_GRID]:
+
+        if sys > 0 and self.subtype not in [None, sRTCM.SSR_META, sRTCM.SSR_GRID]:
             j = self.sc_t[self.subtype]
             self.fh.write(f" Update Interval: {self.udint_t[self.udi[j]]}[s]")
             self.fh.write(f" MultiMsg: {self.mi}\n")
@@ -3887,7 +3888,7 @@ class rtcm(cssr, rtcmUtil):
         return i
 
     def decode_integrity_ssr(self, msg, i):
-        """ RTCM SC-134 SSR integrity message (MT11,12,13) """
+        """ RTCM SC-134 SSR integrity message (MT2011) """
         i = self.decode_integ_head(msg, i)
         
         # SSR provider ID, solution type, iod
@@ -3904,6 +3905,7 @@ class rtcm(cssr, rtcmUtil):
         iod_sys = {}
 
         flag_t = {}
+        sat_e = []
         for sys_ in sys_t:
             sys = self.integ.sys_tbl[sys_]
             mask_sat, iod_sys[sys] = bs.unpack_from('u64u2', msg, i)
@@ -3915,7 +3917,10 @@ class rtcm(cssr, rtcmUtil):
                 sat = self.svid2sat(sys, svid)
                 flag_t[sys][sat] = bs.unpack_from('u2', msg, i)[0]
                 i += 2
-
+                if flag_t[sys][sat] == 1: # Do Not USe:
+                    sat_e.append(sat)
+                    
+        self.integ.sat_e = sat_e
         self.integ.iod_sys = iod_sys
         self.integ.flag = flag_t
 
@@ -4366,7 +4371,7 @@ class rtcme(cssre, rtcmUtil):
 
         # validity period DFi065
         # update rate interval DFi067
-        vp = self.integ.vp_r_tbl[self.integ.vp]
+        vp = self.integ.vp_r_tbl[int(self.integ.vp)]
         bs.pack_into('u4u16', msg, i, vp, self.integ.udi*10)
         i += 20
 
