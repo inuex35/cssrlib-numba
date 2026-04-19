@@ -1635,6 +1635,84 @@ class pppos():
         ix = np.resize(ix, (nb, 2))
         return ix
 
+    def resamb_lambda_partial(self, sat, armode=1, P0=0.995, max_drop=5):
+        """Partial-AR variant of resamb_lambda.
+
+        Starts with the full DD set from ddidx(). If the ratio test fails,
+        drops the DD whose float-integer gap |y - round(y)| is largest and
+        retries. Continues up to max_drop drops or until fewer than 4 DDs
+        remain. Each dropped DD's target sat gets nav.fix set to 1 so
+        restamb() only restores the accepted subset.
+
+        Use instead of resamb_lambda() when multipath-contaminated float
+        ambiguities prevent full AR — a contaminated-N subset often
+        passes ratio once the worst 1-3 sats are excluded.
+
+        Returns (nb_accepted, xa). nb_accepted=0 means no partial subset
+        passed ratio test; -1 means not enough DDs to start with.
+        """
+        nx = self.nav.nx
+        na = self.nav.na
+        xa_out = np.zeros(na)
+        ix_full = self.ddidx(self.nav, sat)
+        if len(ix_full) < 4:
+            return -1, -1
+
+        active = np.ones(len(ix_full), dtype=bool)
+        # Cache state snapshot so we can restore nav.fix after partial.
+        fix_snapshot = self.nav.fix.copy()
+
+        for _drop_iter in range(max_drop + 1):
+            sel = np.where(active)[0]
+            if len(sel) < 4:
+                break
+            ix = ix_full[sel]
+            y = self.nav.x[ix[:, 0]] - self.nav.x[ix[:, 1]]
+            DP = self.nav.P[ix[:, 0], na:nx] - self.nav.P[ix[:, 1], na:nx]
+            Qb = DP[:, ix[:, 0] - na] - DP[:, ix[:, 1] - na]
+            Qab = self.nav.P[0:na, ix[:, 0]] - self.nav.P[0:na, ix[:, 1]]
+
+            b, s, nfix, Ps = mlambda(y, Qb, armode=armode, P0=P0)
+            if nfix <= 0:
+                break
+
+            bias = b[:, 0]
+            ratio_ok = (armode == 2 or s[0] <= 0.0 or
+                        s[1] / s[0] >= self.nav.thresar)
+
+            if ratio_ok:
+                # Demote excluded sats' fix flag from 2 → 1 so restamb() and
+                # holdamb() only act on the accepted subset.
+                dropped = np.where(~active)[0]
+                for gidx in dropped:
+                    t_idx = ix_full[gidx, 1]  # index into nav.x
+                    offset = t_idx - na
+                    f_t = int(offset // uGNSS.MAXSAT)
+                    s_t = int(offset % uGNSS.MAXSAT) + 1
+                    # Only demote if no other accepted row uses this target
+                    still_used = any(
+                        ix_full[gi, 1] == t_idx for gi in sel)
+                    if not still_used and 0 < s_t <= uGNSS.MAXSAT:
+                        self.nav.fix[s_t - 1, f_t] = 1
+
+                self.nav.xa = self.nav.x[0:na].copy()
+                self.nav.Pa = self.nav.P[0:na, 0:na].copy()
+                y_res = y - bias
+                K = Qab @ np.linalg.inv(Qb)
+                self.nav.xa -= K @ y_res
+                self.nav.Pa -= K @ Qab.T
+                xa_out = self.restamb(bias, len(ix))
+                return len(ix), xa_out
+
+            # Drop the worst DD (largest float-integer gap)
+            frac = np.abs(y - np.round(y))
+            worst_local = int(np.argmax(frac))
+            active[sel[worst_local]] = False
+
+        # All attempts failed — restore fix snapshot and return float.
+        self.nav.fix = fix_snapshot
+        return 0, xa_out
+
     def resamb_lambda(self, sat, armode=1, P0=0.995):
         """ resolve integer ambiguity using LAMBDA method """
         nx = self.nav.nx
