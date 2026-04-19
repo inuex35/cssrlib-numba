@@ -8,13 +8,6 @@ import numpy as np
 from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
     time2gpst, timeget, time2gst, time2bdt, gst2time, bdt2time, epoch2time
-from cssrlib.glonass import (
-    deq as glonass_deq,
-    glorbit as glonass_glorbit,
-    propagate_glonass as glonass_propagate,
-)
-from cssrlib.geometry import ecef2llh
-from cssrlib.orbit import broadcast_orbit
 from datetime import datetime
 import xml.etree.ElementTree as et
 
@@ -59,25 +52,65 @@ def dtadjust(t1, t2, tw=604800):
     return dt
 
 
-deq = glonass_deq
-glorbit = glonass_glorbit
+def deq(x, acc):
+    xdot = np.zeros(6)
+
+    r2 = x[0:3]@x[0:3]
+    r3 = r2*np.sqrt(r2)
+    omg2 = rCST.OMGE_GLO**2
+
+    if r2 <= 0.0:
+        return xdot
+
+    a = 1.5*rCST.J2_GLO*rCST.MU_GLO*rCST.RE_GLO**2/r2/r3
+    b = 5.0*x[2]**2/r2
+    c = -rCST.MU_GLO/r3-a*(1.0-b)
+
+    xdot[0:3] = x[3:6]
+    xdot[3] = (c+omg2)*x[0]+2.0*rCST.OMGE_GLO*x[4]
+    xdot[4] = (c+omg2)*x[1]-2.0*rCST.OMGE_GLO*x[3]
+    xdot[5] = (c-2.0*a)*x[2]
+    xdot[3:6] += acc
+    return xdot
+
+
+def glorbit(t, x, acc):
+    k1 = deq(x, acc)
+    w = x + k1*t/2.0
+    k2 = deq(w, acc)
+    w = x + k2*t/2.0
+    k3 = deq(w, acc)
+    w = x + k3*t
+    k4 = deq(w, acc)
+    x += (k1+2.0*k2+2.0*k3+k4)*t/6.0
+    return x
 
 
 def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=1.0):
     """ calculate GLONASS satellite position based on ephemeris """
-    dt = timediff(time, geph.toe)
-    pos, vel, dts = glonass_propagate(
-        dt,
-        np.asarray(geph.pos, dtype=np.float64),
-        np.asarray(geph.vel, dtype=np.float64),
-        np.asarray(geph.acc, dtype=np.float64),
-        float(geph.taun),
-        float(geph.gamn),
-        step=float(TSTEP),
-    )
+    t = timediff(time, geph.toe)
+    dts = -geph.taun+geph.gamn*t
+    x = np.zeros(6)
+    x[0:3] = geph.pos
+    x[3:6] = geph.vel
+
+    tt = -TSTEP if t < 0.0 else TSTEP
+
+    while True:
+        if np.fabs(t) <= 1e-9:
+            break
+        if np.fabs(t) < TSTEP:
+            tt = t
+        x = glorbit(tt, x, geph.acc)
+        t -= tt
+
+    rs = x[0:3]
+    vs = x[3:6]
+
     if flg_v:
-        return pos, vel, dts
-    return pos, dts
+        return rs, vs, dts
+    else:
+        return rs, dts
 
 
 def geph2clk(time: gtime_t, geph: Geph):
@@ -126,47 +159,76 @@ def eph2pos(t: gtime_t, eph: Eph, flg_v=False):
     sys, prn = sat2prn(eph.sat)
     mu, omge = sys2MuOmega(sys)
     dt = dtadjust(t, eph.toe)
-    A = float(eph.A)
-    n0 = np.sqrt(mu/A**3)
-    dna = float(eph.deln)
-    Ak = A
+    n0 = np.sqrt(mu/eph.A**3)
+    dna = eph.deln
+    Ak = eph.A
     if eph.mode > 0:
-        dna += 0.5*dt*float(getattr(eph, 'delnd', 0.0))
-        Ak += dt*float(getattr(eph, 'Adot', 0.0))
+        dna += 0.5*dt*eph.delnd
+        Ak += dt*eph.Adot
     n = n0+dna
-    M = float(eph.M0)+n*dt
+    M = eph.M0+n*dt
+    E, sE = eccentricAnomaly(M, eph.e)
+    cE = np.cos(E)
     dtc = dtadjust(t, eph.toc)
-    is_bds_geo = 1 if (sys == uGNSS.BDS and (prn <= 5 or prn >= 59)) else 0
-    sqrt_mu_A = np.sqrt(mu*A)
-    rs, vs, dts = broadcast_orbit(
-        float(dt),
-        float(dtc),
-        float(n),
-        float(Ak),
-        float(M),
-        float(eph.e),
-        float(eph.omg),
-        float(eph.cuc),
-        float(eph.cus),
-        float(eph.crc),
-        float(eph.crs),
-        float(eph.cic),
-        float(eph.cis),
-        float(eph.i0),
-        float(eph.idot),
-        float(eph.OMG0),
-        float(eph.OMGd),
-        float(omge),
-        float(getattr(eph, 'toes', 0.0)),
-        is_bds_geo,
-        float(sqrt_mu_A),
-        float(eph.af0),
-        float(eph.af1),
-        float(eph.af2),
-        1 if flg_v else 0,
-    )
-    if flg_v:
+    dtrel = -2.0*np.sqrt(mu*eph.A)*eph.e*sE/rCST.CLIGHT**2
+    dts = eph.af0+eph.af1*dtc+eph.af2*dtc**2 + dtrel
+
+    nus = np.sqrt(1.0-eph.e**2)*sE
+    nuc = cE-eph.e
+    nue = 1.0-eph.e*cE
+
+    nu = np.arctan2(nus, nuc)
+    phi = nu+eph.omg
+    h2 = np.array([np.cos(2.0*phi), np.sin(2.0*phi)])
+    u = phi+np.array([eph.cuc, eph.cus])@h2
+    r = Ak*nue+np.array([eph.crc, eph.crs])@h2
+    h = np.array([np.cos(u), np.sin(u)])
+    xo = r*h
+
+    inc = eph.i0+eph.idot*dt+np.array([eph.cic, eph.cis])@h2
+    si = np.sin(inc)
+    ci = np.cos(inc)
+
+    if sys == uGNSS.BDS and (prn <= 5 or prn >= 59):  # BDS GEO
+        Omg = eph.OMG0+eph.OMGd*dt-omge*eph.toes
+        sOmg = np.sin(Omg)
+        cOmg = np.cos(Omg)
+        p = np.array([cOmg, sOmg, 0])
+        q = np.array([-ci*sOmg, ci*cOmg, si])
+        rg = xo@np.array([p, q])
+        so = np.sin(omge*dt)
+        co = np.cos(omge*dt)
+        Mo = np.array([[co, so*rCST.COS_5, so*rCST.SIN_5],
+                       [-so, co*rCST.COS_5, co*rCST.SIN_5],
+                       [0.0,   -rCST.SIN_5,    rCST.COS_5]])
+        rs = Mo@rg
+    else:
+        Omg = eph.OMG0+eph.OMGd*dt-omge*(eph.toes+dt)
+        sOmg = np.sin(Omg)
+        cOmg = np.cos(Omg)
+        p = np.array([cOmg, sOmg, 0])
+        q = np.array([-ci*sOmg, ci*cOmg, si])
+        rs = xo@np.array([p, q])
+
+    if flg_v:  # satellite velocity
+        qq = np.array([si*sOmg, -si*cOmg, ci])
+        Ed = n/nue
+        nud = np.sqrt(1.0-eph.e**2)/nue*Ed
+        h2d = 2.0*nud*np.array([-h[1], h[0]])
+        ud = nud+np.array([eph.cuc, eph.cus])@h2d
+        rd = Ak*eph.e*sE*Ed+np.array([eph.crc, eph.crs])@h2d
+
+        hd = np.array([-h[1], h[0]])
+        xod = rd*h+(r*ud)*hd
+        incd = eph.idot+np.array([eph.cic, eph.cis])@h2d
+        omegd = eph.OMGd-omge
+
+        pd = np.array([-p[1], p[0], 0])*omegd
+        qd = np.array([-q[1], q[0], 0])*omegd+qq*incd
+
+        vs = xo@np.array([pd, qd])+xod@np.array([p, q])
         return rs, vs, dts
+
     return rs, dts
 
 

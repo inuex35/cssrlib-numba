@@ -18,93 +18,55 @@ reference:
 
 """
 
-import math
 import numpy as np
-from numba import njit
+from scipy.stats import norm
 from numpy.linalg import inv
 
-_INV_SQRT2 = 1.0 / math.sqrt(2.0)
 
-
-@njit(cache=True)
-def _round_to_int(value):
-    return int(np.rint(value))
-
-
-@njit(cache=True)
-def _signed_step(value):
-    if value > 0.0:
-        return 1
-    if value < 0.0:
-        return -1
-    return 0
-
-
-@njit(cache=True)
-def _sr_boost(d):
-    prod = 1.0
-    for i in range(d.size):
-        val = 0.5 / math.sqrt(d[i])
-        cdf = 0.5 * (1.0 + math.erf(val * _INV_SQRT2))
-        prod *= 2.0 * cdf - 1.0
-    return prod
-
-
-@njit(cache=True)
-def _ldldecom(Q):
-    n = Q.shape[0]
-    L = np.zeros((n, n), dtype=np.float64)
-    d = np.zeros(n, dtype=np.float64)
+def ldldecom(Q):
+    """ Lt*d*L decomposition of positive symmetric matrix Q """
+    n = len(Q)
+    L = np.zeros((n, n))
+    d = np.zeros(n)
     A = Q.copy()
     for i in range(n-1, -1, -1):
         d[i] = A[i, i]
-        if d[i] <= 0.0:
-            continue
         L[i, :i+1] = A[i, :i+1]/np.sqrt(d[i])
         for j in range(i):
             A[j, :j+1] -= L[i, :j+1]*L[i, j]
         L[i, :i+1] /= L[i, i]
+
+    if np.any((d < 1e-10)):
+        raise SystemExit("Qah should be positive definite.")
+
     return L, d
 
 
-@njit(cache=True)
-def _reduction(L, d):
-    n = d.size
-    Z = np.eye(n, dtype=np.float64)
+def reduction(L, d):
+    n = len(d)
+    Z = np.eye(n)
     j = n-2
     k = n-2
     while j >= 0:
         if j <= k:
             for i in range(j+1, n):
-                mu = np.rint(L[i, j])
+                mu = np.round(L[i, j])
                 if mu != 0.0:
                     L[i:, j] -= mu*L[i:, i]
                     Z[:, j] -= mu*Z[:, i]
 
         delta = d[j]+L[j+1, j]**2*d[j+1]
-        if delta+1e-6 < d[j+1]:
+        if delta+1e-6 < d[j+1]:  # permutation
             eta = d[j]/delta
             lam = d[j+1]*L[j+1, j]/delta
             d[j] = eta*d[j+1]
             d[j+1] = delta
-            lj1j = L[j+1, j]
-            if j > 0:
-                for col in range(j):
-                    Lj_col = L[j, col]
-                    Lj1_col = L[j+1, col]
-                    t0 = -lj1j*Lj_col+Lj1_col
-                    t1 = eta*Lj_col+lam*Lj1_col
-                    L[j, col] = t0
-                    L[j+1, col] = t1
+            L[j:j+2, :j] = np.array([[-L[j+1, j], 1], [eta, lam]])@L[j:j+2, :j]
             L[j+1, j] = lam
-            for row in range(j+2, n):
-                tmp = L[row, j]
-                L[row, j] = L[row, j+1]
-                L[row, j+1] = tmp
-            for row in range(n):
-                tmp = Z[row, j]
-                Z[row, j] = Z[row, j+1]
-                Z[row, j+1] = tmp
+            # swap j,j+1 row
+            L[j+2:, [j+1, j]] = L[j+2:, [j, j+1]]
+            Z[:, [j+1, j]] = Z[:, [j, j+1]]
+
             k = j
             j = n-2
         else:
@@ -112,28 +74,33 @@ def _reduction(L, d):
     return L, d, Z
 
 
-@njit(cache=True)
-def _msearch(L, d, ahat, ncands):
-    n = d.size
+def sr_boost(d):
+    """ Compute the bootstrapped success rate """
+    Ps = np.prod(2*norm.cdf(0.5/np.sqrt(d))-1)
+    return Ps
+
+
+def msearch(L, d, ahat, ncands=2):
+    n = len(d)
     Chi2 = 1e18
 
-    dist = np.zeros(n, dtype=np.float64)
-    acond = np.zeros(n, dtype=np.float64)
+    dist = np.zeros(n)
+    acond = np.zeros(n)
     zcond = np.zeros(n, dtype=np.int32)
     step = np.zeros(n, dtype=np.int32)
-    afixed = np.zeros((n, ncands), dtype=np.float64)
-    sqnorm = np.zeros(ncands, dtype=np.float64)
+    afixed = np.zeros((n, ncands))
+    sqnorm = np.zeros(ncands)
 
     acond[-1] = ahat[-1]
-    zcond[-1] = _round_to_int(acond[-1])
+    zcond[-1] = round(acond[-1])
     left = acond[-1]-zcond[-1]
-    step[-1] = _signed_step(left)
+    step[-1] = np.sign(left)
     if step[-1] == 0:
         step[-1] = 1
 
     imax = ncands - 1
-    S = np.zeros((n, n), dtype=np.float64)
-    count = -1
+    S = np.zeros((n, n))
+    count = -1  # number of candidates
     endSearch = False
     k = n-1
 
@@ -145,9 +112,9 @@ def _msearch(L, d, ahat, ncands):
                 dist[k] = newdist
                 S[k, :k+1] = S[k+1, :k+1]+(zcond[k+1]-acond[k+1])*L[k+1, :k+1]
                 acond[k] = ahat[k]+S[k, k]
-                zcond[k] = _round_to_int(acond[k])
+                zcond[k] = round(acond[k])
                 left = acond[k]-zcond[k]
-                step[k] = _signed_step(left)
+                step[k] = np.sign(left)
                 if step[k] == 0:
                     step[k] = 1
             else:
@@ -159,12 +126,12 @@ def _msearch(L, d, ahat, ncands):
                     afixed[:, imax] = zcond
                     sqnorm[imax] = newdist
 
-                    imax = int(np.argmax(sqnorm))
+                    imax = np.argmax(sqnorm)
                     Chi2 = sqnorm[imax]
 
                 zcond[0] += step[0]
                 left = acond[0]-zcond[0]
-                step[0] = -step[0]-_signed_step(step[0])
+                step[0] = -step[0]-np.sign(step[0])
         else:
             if k == n-1:
                 endSearch = True
@@ -172,45 +139,42 @@ def _msearch(L, d, ahat, ncands):
                 k += 1
                 zcond[k] += step[k]
                 left = acond[k]-zcond[k]
-                step[k] = -step[k]-_signed_step(step[k])
+                step[k] = -step[k]-np.sign(step[k])
 
     order = np.argsort(sqnorm)
-    sqnorm_sorted = np.zeros_like(sqnorm)
-    afixed_sorted = np.zeros_like(afixed)
-    for idx in range(order.size):
-        sqnorm_sorted[idx] = sqnorm[order[idx]]
-        afixed_sorted[:, idx] = afixed[:, order[idx]]
+    sqnorm = sqnorm[order]
+    afixed = afixed[:, order]
 
-    return afixed_sorted, sqnorm_sorted
+    return afixed, sqnorm
 
 
-@njit(cache=True)
-def _estimILS(L, d, ahat, ncands):
-    n = d.size
+def estimILS(L, d, ahat, ncands=2):
+    """ ILS estimator by search-and-shrink [4] """
+    n = len(d)
     Chi2 = 1e18
 
     k0 = 1 if (ncands == 1 and n > 1) else 0
 
-    afixed = np.zeros((n, ncands), dtype=np.float64)
-    sqnorm = np.zeros(ncands, dtype=np.float64)
+    afixed = np.zeros((n, ncands))
+    sqnorm = np.zeros(ncands)
 
-    acond = np.zeros(n, dtype=np.float64)
+    acond = np.zeros(n)
     zcond = np.zeros(n, dtype=np.int32)
-    left = np.zeros(n, dtype=np.float64)
+    left = np.zeros(n)
     step = np.zeros(n, dtype=np.int32)
 
     acond[-1] = ahat[-1]
-    zcond[-1] = _round_to_int(acond[-1])
+    zcond[-1] = round(acond[-1])
     left[-1] = acond[-1] - zcond[-1]
-    step[-1] = _signed_step(left[-1])
+    step[-1] = np.sign(left[-1])
     if step[-1] == 0:
         step[-1] = 1
 
-    count = -1
+    count = -1  # number of candidates
     imax = ncands - 1
 
-    S = np.zeros((n, n), dtype=np.float64)
-    dist = np.zeros(n, dtype=np.float64)
+    S = np.zeros((n, n))
+    dist = np.zeros(n)
     path = (n-1)*np.ones(n, dtype=np.int32)
 
     endSearch = False
@@ -227,9 +191,9 @@ def _estimILS(L, d, ahat, ncands):
                     S[j-1, k] = S[j, k]-left[j]*L[j, k]
 
                 acond[k] = ahat[k]+S[k, k]
-                zcond[k] = _round_to_int(acond[k])
+                zcond[k] = round(acond[k])
                 left[k] = acond[k]-zcond[k]
-                step[k] = _signed_step(left[k])
+                step[k] = np.sign(left[k])
                 if step[k] == 0:
                     step[k] = 1
             else:
@@ -241,13 +205,14 @@ def _estimILS(L, d, ahat, ncands):
                     afixed[:, imax] = zcond
                     sqnorm[imax] = newdist
 
-                    imax = int(np.argmax(sqnorm))
+                    imax = np.argmax(sqnorm)
                     Chi2 = sqnorm[imax]
 
+                # next valid integer (k+1 level)
                 k = k0
                 zcond[k] += step[k]
                 left[k] = acond[k]-zcond[k]
-                step[k] = -step[k]-_signed_step(step[k])
+                step[k] = -step[k]-np.sign(step[k])
 
             newdist = dist[k] + left[k]**2/d[k]
 
@@ -260,7 +225,7 @@ def _estimILS(L, d, ahat, ncands):
             k += 1
             zcond[k] += step[k]
             left[k] = acond[k]-zcond[k]
-            step[k] = -step[k]-_signed_step(step[k])
+            step[k] = -step[k]-np.sign(step[k])
             newdist = dist[k] + left[k]**2/d[k]
 
         path[ilevel:k] = k
@@ -271,49 +236,10 @@ def _estimILS(L, d, ahat, ncands):
                 break
 
     order = np.argsort(sqnorm)
-    sqnorm_sorted = np.zeros_like(sqnorm)
-    afixed_sorted = np.zeros_like(afixed)
-    for idx in range(order.size):
-        sqnorm_sorted[idx] = sqnorm[order[idx]]
-        afixed_sorted[:, idx] = afixed[:, order[idx]]
+    sqnorm = sqnorm[order]
+    afixed = afixed[:, order]
 
-    return afixed_sorted, sqnorm_sorted
-
-
-def ldldecom(Q):
-    """ Lt*d*L decomposition of positive symmetric matrix Q """
-    Q_arr = np.asarray(Q, dtype=np.float64)
-    L, d = _ldldecom(Q_arr)
-    if np.any((d < 1e-10)):
-        raise SystemExit("Qah should be positive definite.")
-    return L, d
-
-
-def reduction(L, d):
-    L_arr = np.asarray(L, dtype=np.float64).copy()
-    d_arr = np.asarray(d, dtype=np.float64).copy()
-    return _reduction(L_arr, d_arr)
-
-
-def sr_boost(d):
-    """ Compute the bootstrapped success rate """
-    d_arr = np.asarray(d, dtype=np.float64)
-    return _sr_boost(d_arr)
-
-
-def msearch(L, d, ahat, ncands=2):
-    L_arr = np.asarray(L, dtype=np.float64)
-    d_arr = np.asarray(d, dtype=np.float64)
-    ahat_arr = np.asarray(ahat, dtype=np.float64)
-    return _msearch(L_arr, d_arr, ahat_arr, int(ncands))
-
-
-def estimILS(L, d, ahat, ncands=2):
-    """ ILS estimator by search-and-shrink [4] """
-    L_arr = np.asarray(L, dtype=np.float64)
-    d_arr = np.asarray(d, dtype=np.float64)
-    ahat_arr = np.asarray(ahat, dtype=np.float64)
-    return _estimILS(L_arr, d_arr, ahat_arr, int(ncands))
+    return afixed, sqnorm
 
 
 def parsearch(zhat, Qzhat, Z, L, d, Ps, P0=0.995, ncands=2):
