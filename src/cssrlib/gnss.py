@@ -9,127 +9,47 @@ import numpy as np
 from datetime import datetime, timezone
 import bitstruct.c as bs
 
+from cssrlib import constants as _c
+from cssrlib import geometry as _geom_fast
+from cssrlib import atmosphere as _atm_fast
+
 gpst0 = [1980, 1, 6, 0, 0, 0]  # GPS system time reference
 gst0 = [1999, 8, 22, 0, 0, 0]  # Galileo system time reference
 bdt0 = [2006, 1, 1, 0, 0, 0]  # BeiDou system time reference
 
 
 class rCST():
-    """ class for constants """
-    CLIGHT = 299792458.0
-    MU_GPS = 3.9860050E14
-    MU_GLO = 3.9860044E14
-    MU_GAL = 3.986004418E14
-    MU_BDS = 3.986004418E14
-    J2_GLO = 1.0826257E-3
-    GME = 3.986004415E+14
-    GMS = 1.327124E+20
-    GMM = 4.902801E+12
-    OMGE = 7.2921151467E-5
-    OMGE_GLO = 7.292115E-5
-    OMGE_GAL = 7.2921151467E-5
-    OMGE_BDS = 7.2921150E-5
-    RE_WGS84 = 6378137.0
-    FE_WGS84 = (1.0/298.257223563)
-    RE_GLO = 6378136.0
-    AU = 149597870691.0
-    D2R = 0.017453292519943295
-    R2D = 57.29577951308232
-    AS2R = D2R/3600.0
-    DAY_SEC = 86400.0
-    WEEK_SEC = 604800.0
-    HALFWEEK_SEC = 302400.0
-    CENTURY_SEC = DAY_SEC*36525.0
+    """ class for constants kept for backwards compatibility """
+    pass
 
-    PI = 3.1415926535898
-    HALFPI = 1.5707963267949
 
-    FREQ_G1 = 1575.42e6      # [Hz] GPS L1
-    FREQ_G2 = 1227.60e6      # [Hz] GPS L2
-    FREQ_G5 = 1176.45e6      # [Hz] GPS L5
+_R_CONSTANTS = (
+    "CLIGHT", "MU_GPS", "MU_GLO", "MU_GAL", "MU_BDS", "J2_GLO", "GME", "GMS",
+    "GMM", "OMGE", "OMGE_GLO", "OMGE_GAL", "OMGE_BDS", "RE_WGS84", "FE_WGS84",
+    "RE_GLO", "AU", "D2R", "R2D", "AS2R", "DAY_SEC", "WEEK_SEC",
+    "HALFWEEK_SEC", "CENTURY_SEC", "PI", "HALFPI", "FREQ_G1", "FREQ_G2",
+    "FREQ_G5", "FREQ_R1", "FREQ_R1k", "FREQ_R2", "FREQ_R2k", "FREQ_R1a",
+    "FREQ_R2a", "FREQ_R3", "FREQ_E1", "FREQ_E5a", "FREQ_E5b", "FREQ_E5",
+    "FREQ_E6", "FREQ_C1", "FREQ_C12", "FREQ_C2a", "FREQ_C2b", "FREQ_C2",
+    "FREQ_C3", "FREQ_J1", "FREQ_J2", "FREQ_J5", "FREQ_J6", "FREQ_S1",
+    "FREQ_S5", "FREQ_I1", "FREQ_I5", "FREQ_IS", "COS_5", "SIN_5",
+    "P2_5", "P2_6", "P2_8", "P2_9", "P2_10", "P2_11", "P2_12", "P2_13",
+    "P2_14", "P2_15", "P2_16", "P2_17", "P2_19", "P2_20", "P2_21", "P2_24",
+    "P2_26", "P2_27", "P2_28", "P2_29", "P2_30", "P2_31", "P2_32", "P2_33",
+    "P2_34", "P2_35", "P2_37", "P2_38", "P2_39", "P2_40", "P2_41", "P2_43",
+    "P2_44", "P2_46", "P2_48", "P2_49", "P2_50", "P2_51", "P2_55", "P2_57",
+    "P2_59", "P2_60", "P2_66", "P2_68", "SC2RAD",
+)
 
-    FREQ_R1 = 1602.000e6     # [Hz] GLO G1   FDMA center frequency
-    FREQ_R1k = 562.500e3     # [Hz] GLO G1   FDMA frequency separation
-    FREQ_R2 = 1246.000e6     # [Hz] GLO G2   FDMA center frequency
-    FREQ_R2k = 437.500e3     # [Hz] GLO G2   FDMA frequency separation
-    FREQ_R1a = 1600.995e6    # [Hz] GLO G1a
-    FREQ_R2a = 1248.065e6    # [Hz] GLO G2a
-    FREQ_R3 = 1202.025e6     # [Hz] GLO G3
+for _name in _R_CONSTANTS:
+    setattr(rCST, _name, getattr(_c, _name))
 
-    FREQ_E1 = 1575.42e6      # [Hz] GAL E1
-    FREQ_E5a = 1176.450e6    # [Hz] GAL E5a
-    FREQ_E5b = 1207.140e6    # [Hz] GAL E5b
-    FREQ_E5 = 1191.795e6     # [Hz] GAL E5
-    FREQ_E6 = 1278.750e6     # [Hz] GAL E6
 
-    FREQ_C1 = 1575.42e6      # [Hz] BDS B1
-    FREQ_C12 = 1561.098e6    # [Hz] BDS B1-2
-    FREQ_C2a = 1176.450e6    # [Hz] BDS B2a
-    FREQ_C2b = 1207.140e6    # [Hz] BDS B2b
-    FREQ_C2 = 1191.795e6     # [Hz] BDS B2
-    FREQ_C3 = 1268.520e6     # [Hz] BDS B3
-
-    FREQ_J1 = 1575.42e6      # [Hz] QZS L1
-
-    FREQ_J2 = 1227.60e6      # [Hz] QZS L2
-    FREQ_J5 = 1176.45e6      # [Hz] QZS L5
-    FREQ_J6 = 1278.75e6      # [Hz] QZS LEX
-
-    FREQ_S1 = 1575.42e6      # [Hz] SBS L1
-    FREQ_S5 = 1176.45e6      # [Hz] SBS L5
-
-    FREQ_I1 = 1575.42e6      # [Hz] IRS L1
-    FREQ_I5 = 1191.795e6     # [Hz] IRS L5
-    FREQ_IS = 2492.028e6     # [Hz] IRS S
-
-    COS_5 = 0.9961946980917456
-    SIN_5 = -0.0871557427476582
-
-    P2_5 = 0.03125
-    P2_6 = 0.015625
-    P2_8 = 0.00390625
-    P2_9 = 0.001953125
-    P2_10 = 9.765625000000000E-04
-    P2_11 = 4.882812500000000E-04
-    P2_12 = 2.441406250000000E-04
-    P2_13 = 1.220703125000000E-04
-    P2_14 = 6.103515625000000E-05
-    P2_15 = 3.051757812500000E-05
-    P2_16 = 1.525878906250000E-05
-    P2_17 = 7.629394531250000E-06
-    P2_19 = 1.907348632812500E-06
-    P2_20 = 9.536743164062500E-07
-    P2_21 = 4.768371582031250E-07
-    P2_24 = 5.960464477539063e-08
-    P2_26 = 1.490116119384766e-08
-    P2_27 = 7.450580596923828e-09
-    P2_28 = 3.725290298461914E-09
-    P2_29 = 1.862645149230957E-09
-    P2_30 = 9.313225746154785E-10
-    P2_31 = 4.656612873077393E-10
-    P2_32 = 2.328306436538696E-10
-    P2_33 = 1.164153218269348E-10
-    P2_34 = 5.820766091346740E-11
-    P2_35 = 2.910383045673370E-11
-    P2_37 = 7.275957614183426E-12
-    P2_38 = 3.637978807091713E-12
-    P2_39 = 1.818989403545856E-12
-    P2_40 = 9.094947017729280E-13
-    P2_41 = 4.547473508864641E-13
-    P2_43 = 1.136868377216160E-13
-    P2_44 = 5.684341886080802E-14
-    P2_46 = 1.421085471520200E-14
-    P2_48 = 3.552713678800501E-15
-    P2_49 = 1.776356839400251E-15
-    P2_50 = 8.881784197001252E-16
-    P2_51 = 4.440892098500626E-16
-    P2_55 = 2.775557561562891E-17
-    P2_57 = 6.938893903907228E-18
-    P2_59 = 1.734723475976810E-18
-    P2_60 = 8.673617379884035E-19
-    P2_66 = 1.355252715606880E-20
-    P2_68 = 3.388131789017201E-21
-    SC2RAD = 3.1415926535898
+def _ensure_vec(vec) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float64)
+    if arr.shape == (3,):
+        return arr
+    return arr.reshape(3)
 
 
 class uGNSS(IntEnum):
@@ -1255,11 +1175,7 @@ def vnorm(r):
 
 def geodist(rs, rr):
     """ calculate geometric distance """
-    e = rs-rr
-    r = np.linalg.norm(e)
-    e = e/r
-    r += rCST.OMGE*(rs[0]*rr[1]-rs[1]*rr[0])/rCST.CLIGHT
-    return r, e
+    return _geom_fast.geodist(_ensure_vec(rs), _ensure_vec(rr))
 
 
 def kfupdate(x, P, H, v, R):
@@ -1320,40 +1236,17 @@ def dops(az, el, elmin=0):
 
 def xyz2enu(pos):
     """ return ECEF to ENU conversion matrix from LLH """
-    sp = sin(pos[0])
-    cp = cos(pos[0])
-    sl = sin(pos[1])
-    cl = cos(pos[1])
-    E = np.array([[-sl, cl, 0],
-                  [-sp*cl, -sp*sl, cp],
-                  [cp*cl, cp*sl, sp]])
-    return E
+    return _geom_fast.xyz2enu_matrix(_ensure_vec(pos))
 
 
 def enu2xyz(pos):
     """ return ENU to ECEF conversion matrix from LLH """
-    return np.array(np.matrix(xyz2enu(pos)).I)
+    return _geom_fast.enu2xyz_matrix(_ensure_vec(pos))
 
 
 def ecef2pos(r):
     """  ECEF to LLH position conversion """
-    e2 = rCST.FE_WGS84*(2-rCST.FE_WGS84)
-    r2 = r[0]**2+r[1]**2
-    v = rCST.RE_WGS84
-    z = r[2]
-    cnt = 0
-    while cnt < 1000:
-        zk = z
-        sp = z/np.sqrt(r2+z**2)
-        v = rCST.RE_WGS84/np.sqrt(1-e2*sp**2)
-        z = r[2]+v*e2*sp
-        if np.fabs(z-zk) < 1e-4:
-            break
-        cnt += 1
-    pos = np.array([np.arctan(z/np.sqrt(r2)),
-                    np.arctan2(r[1], r[0]),
-                    np.sqrt(r2+z**2)-v])
-    return pos
+    return _geom_fast.ecef2llh(_ensure_vec(r))
 
 
 def pos2ecef(pos, isdeg: bool = False):
@@ -1375,9 +1268,7 @@ def pos2ecef(pos, isdeg: bool = False):
 
 def ecef2enu(pos, r):
     """ relative ECEF to ENU conversion """
-    E = xyz2enu(pos)
-    e = E@r
-    return e
+    return _geom_fast.ecef2enu(_ensure_vec(pos), _ensure_vec(r))
 
 
 def deg2dms(deg):
@@ -1422,10 +1313,7 @@ def ionppp(pos, az, el, re, hion):
 
 def satazel(pos, e):
     """ calculate az/el from LOS vector in ECEF (e) """
-    enu = ecef2enu(pos, e)
-    az = atan2(enu[0], enu[1])
-    el = asin(enu[2])
-    return az, el
+    return _geom_fast.satazel(_ensure_vec(pos), _ensure_vec(e))
 
 
 def interpc(coef, lat):
@@ -1467,60 +1355,23 @@ def tropmodel(t, pos, el=np.pi/2, humi=0.7, model=uTropoModel.SAAST):
 
 def meteo(hgt, humi):
     """ standard atmosphere model """
-    pres = 1013.25*np.power(1-2.2557e-5*hgt, 5.2568)
-    temp = 15.0-6.5e-3*hgt+273.16
-    e = 6.108*humi*np.exp((17.15*temp-4684.0)/(temp-38.45))
-    return pres, temp, e
+    return _atm_fast.meteo(float(hgt), float(humi))
 
 
 def mapf(el, a, b, c):
     """ simple tropospheric mapping function """
-    sinel = np.sin(el)
-    return (1.0+a/(1.0+b/(1.0+c)))/(sinel+(a/(sinel+b/(sinel+c))))
+    return _atm_fast.mapf(float(el), float(a), float(b), float(c))
 
 
 def tropmapfNiell(t, pos, el):
     """ tropospheric mapping function by Niell (NMF) """
-    if pos[2] < -1e3 or pos[2] > 20e3 or el <= 0.0:
-        return 0.0, 0.0
-    coef = np.array([
-        [1.2769934E-3, 1.2683230E-3, 1.2465397E-3, 1.2196049E-3, 1.2045996E-3],
-        [2.9153695E-3, 2.9152299E-3, 2.9288445E-3, 2.9022565E-3, 2.9024912E-3],
-        [62.610505E-3, 62.837393E-3, 63.721774E-3, 63.824265E-3, 64.258455E-3],
-        [0.0000000E-0, 1.2709626E-5, 2.6523662E-5, 3.4000452E-5, 4.1202191E-5],
-        [0.0000000E-0, 2.1414979E-5, 3.0160779E-5, 7.2562722E-5, 11.723375E-5],
-        [0.0000000E-0, 9.0128400E-5, 4.3497037E-5, 84.795348E-5, 170.37206E-5],
-        [5.8021897E-4, 5.6794847E-4, 5.8118019E-4, 5.9727542E-4, 6.1641693E-4],
-        [1.4275268E-3, 1.5138625E-3, 1.4572752E-3, 1.5007428E-3, 1.7599082E-3],
-        [4.3472961E-2, 4.6729510E-2, 4.3908931E-2, 4.4626982E-2, 5.4736038E-2],
-    ])
-    aht = [2.53E-5, 5.49E-3, 1.14E-3]
-    lat = np.rad2deg(pos[0])
-    hgt = pos[2]
-    y = (time2doy(t)-28.0)/365.25
-    if lat < 0.0:
-        y += 0.5
-    cosy = np.cos(2.0*np.pi*y)
-    lat = np.abs(lat)
-    c = interpc(coef, lat)
-    ah = c[0:3]-c[3:6]*cosy
-    aw = c[6:9]
-    dm = (1.0/np.sin(el)-mapf(el, aht[0], aht[1], aht[2]))*hgt*1e-3
-    mapfh = mapf(el, ah[0], ah[1], ah[2])+dm
-    mapfw = mapf(el, aw[0], aw[1], aw[2])
-    return mapfh, mapfw
+    doy = float(time2doy(t))
+    return _atm_fast.tropmapf_niell(doy, _ensure_vec(pos), float(el))
 
 
 def tropmodelSaast(t, pos, el=np.pi/2, humi=0.7):
     """ saastamoinen tropospheric delay model """
-    hgt = pos[2]
-    # standard atmosphere
-    pres, temp, e = meteo(hgt, humi)
-    # saastamoinen
-    z = np.pi/2.0-el
-    trop_hs = 0.0022768*pres/(1.0-0.00266*np.cos(2*pos[0])-0.00028e-3*hgt)
-    trop_wet = 0.002277*(1255.0/temp+0.05)*e
-    return trop_hs, trop_wet, z
+    return _atm_fast.tropmodel_saast(_ensure_vec(pos), float(el), float(humi))
 
 
 def meteoHpf():

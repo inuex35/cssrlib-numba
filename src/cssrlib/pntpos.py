@@ -2,53 +2,271 @@
 module for standalone positioning
 """
 import numpy as np
-from cssrlib.gnss import rCST, ecef2pos, geodist, satazel, \
-    tropmodel, tropmapf, sat2prn, uGNSS, uTropoModel, uIonoModel, \
-    timediff, time2gpst, dops, uTYP, Obs, time2str
+from numba import njit
+from cssrlib.constants import D2R, RE_WGS84
+from cssrlib.gnss import rCST, ecef2pos, \
+    tropmodel, sat2prn, uGNSS, uTropoModel, uIonoModel, \
+    timediff, time2gpst, time2doy, dops, uTYP, Obs, time2str
 from cssrlib.cssrlib import sCSSRTYPE
 from cssrlib.ephemeris import satposs
 from cssrlib.pppssr import pppos
 from cssrlib.sbas import ionoSBAS
 from cssrlib.dgps import vardgps
 from math import sin, cos
+from cssrlib.ionosphere import klobuchar_delay
+from cssrlib.geometry import geodist, satazel
+from cssrlib.atmosphere import tropmapf_niell
+
+TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
+TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
+from cssrlib.orbit import broadcast_orbit
 
 
-def ionKlobuchar(t, pos, az, el, ion=None):
-    """ klobuchar model of ionosphere delay estimation """
-    psi = 0.0137/(el/np.pi+0.11)-0.022
-    phi = pos[0]/np.pi+psi*cos(az)
-    phi = np.max((-0.416, np.min((0.416, phi))))
-    lam = pos[1]/np.pi+psi*sin(az)/cos(phi*np.pi)
-    phi += 0.064*cos((lam-1.617)*np.pi)
-    _, tow = time2gpst(t)
-    tt = 43200.0*lam+tow  # local time
-    tt -= tt//86400*86400
-    sf = 1.0+16.0*(0.53-el/np.pi)**3  # slant factor
+@njit(cache=True)
+def _vardgps_variance(el: float, user_height: float, baseline: float) -> float:
+    """DGPS measurement variance model rewritten for Numba."""
 
-    h = [1, phi, phi**2, phi**3]
-    amp = max(h@ion[0, :], 0)
-    per = max(h@ion[1, :], 72000.0)
-    x = 2.0*np.pi*(tt-50400.0)/per  # local 14h
-    if np.abs(x) < 1.57:
-        v = 5e-9+amp*(1.0+x*x*(-0.5+x*x/24.0))
-    else:
-        v = 5e-9
-    diono = rCST.CLIGHT*sf*v  # iono delay at L1 [m]
-    return diono
+    denom = RE_WGS84 + user_height
+    if denom <= 0.0:
+        denom = RE_WGS84
+    ratio = RE_WGS84 * np.cos(el) / denom
+    if ratio >= 1.0:
+        ratio = 0.999999
+    elif ratio <= -1.0:
+        ratio = -0.999999
+    Fpp = 1.0 / np.sqrt(1.0 - ratio * ratio)
+    s_iono = Fpp * 0.004 * (baseline + 14.0)
+    s_mp = 0.13 + 0.53 * np.exp(-el / 0.1745)
+    v_air = 0.11 * 0.11 + s_mp * s_mp
+    v_pr = (0.16 + 0.107 * np.exp(-el / 0.271)) ** 2 + 0.08 ** 2
+    return v_pr + v_air + s_iono * s_iono
 
+
+@njit(cache=True)
+def _varerr_jit(
+    el: float,
+    f_idx: int,
+    eratio: np.ndarray,
+    err: np.ndarray,
+    smode: int,
+    user_height: float,
+    baseline: float,
+) -> float:
+    """JIT-compatible measurement variance helper."""
+
+    if smode == 2:
+        return _vardgps_variance(el, user_height, baseline)
+
+    s_el = np.sin(el)
+    min_sin = 0.1 * D2R
+    if s_el < min_sin:
+        s_el = min_sin
+    fact = eratio[f_idx] if f_idx < eratio.size else eratio[-1]
+    a = fact * err[1]
+    b = fact * err[2]
+    return a * a + (b / s_el) ** 2
+
+
+@njit(cache=True)
+def _assemble_sdres_blocks(
+    y: np.ndarray,
+    e: np.ndarray,
+    el: np.ndarray,
+    sat_ids: np.ndarray,
+    sat_systems: np.ndarray,
+    sys_list: np.ndarray,
+    nf: int,
+    nav_nx: int,
+    icb_idx: int,
+    eratio: np.ndarray,
+    err: np.ndarray,
+    smode: int,
+    edt_values: np.ndarray,
+    user_height: float,
+    baseline: float,
+):
+    """Build SD residual blocks in a vectorised/JIT friendly manner."""
+
+    n_sats = sat_ids.size
+    nv_max = n_sats * nf
+    v = np.zeros(nv_max, dtype=np.float64)
+    H = np.zeros((nv_max, nav_nx), dtype=np.float64)
+    Rj = np.zeros(nv_max, dtype=np.float64)
+    nb = np.zeros(sys_list.size * nf, dtype=np.int64)
+
+    use_edt = edt_values.size > 0
+    edt_rows = edt_values.shape[0] if edt_values.ndim >= 1 else 0
+    edt_cols = edt_values.shape[1] if edt_values.ndim == 2 else 0
+
+    nv = 0
+    block_index = 0
+    for sys_idx in range(sys_list.size):
+        sys_code = sys_list[sys_idx]
+        for f_idx in range(nf):
+            block_len = 0
+            for sat_idx in range(n_sats):
+                if sat_systems[sat_idx] != sys_code:
+                    continue
+
+                if use_edt:
+                    sat_number = sat_ids[sat_idx] - 1
+                    if sat_number < 0 or sat_number >= edt_rows:
+                        continue
+                    invalid = False
+                    if edt_cols > 0:
+                        for col in range(edt_cols):
+                            if edt_values[sat_number, col] > 0.0:
+                                invalid = True
+                                break
+                    else:
+                        if edt_values[sat_number] > 0.0:
+                            invalid = True
+                    if invalid:
+                        continue
+
+                v[nv] = y[sat_idx, f_idx]
+                H[nv, :3] = -e[sat_idx, :]
+                H[nv, icb_idx] = 1.0
+                Rj[nv] = _varerr_jit(
+                    el[sat_idx],
+                    f_idx,
+                    eratio,
+                    err,
+                    smode,
+                    user_height,
+                    baseline,
+                )
+                nv += 1
+                block_len += 1
+
+            if block_len > 0:
+                nb[block_index] = block_len
+                block_index += 1
+
+    return v[:nv], H[:nv, :], Rj[:nv], nb[:block_index]
+
+
+@njit(cache=True)
+def _tropmapf_dispatch(doy: float, pos: np.ndarray, el: float, model: int):
+    if model == TROPO_MODEL_HOPF:
+        mapfh = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 72.0) ** 2))
+        mapfw = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 120.0) ** 2))
+        return mapfh, mapfw
+    elif model == TROPO_MODEL_SAAST:
+        return tropmapf_niell(doy, pos, el)
+    return 0.0, 0.0
+
+
+@njit(cache=True)
+def compute_geometry_and_delays(
+    rs: np.ndarray,
+    rr: np.ndarray,
+    pos: np.ndarray,
+    elmin: float,
+    doy: float,
+    tow: float,
+    alpha: np.ndarray,
+    beta: np.ndarray,
+    trop_hs: float,
+    trop_wet: float,
+    use_tropo: int,
+    use_iono: int,
+    trp_model: int,
+):
+    """Compute geometry, az/el, tropo and iono delays for all satellites."""
+
+    n = rs.shape[0]
+    geom = np.zeros(n, dtype=np.float64)
+    az_out = np.zeros(n, dtype=np.float64)
+    el_out = np.zeros(n, dtype=np.float64)
+    los = np.zeros((n, 3), dtype=np.float64)
+    trop = np.zeros(n, dtype=np.float64)
+    iono = np.zeros(n, dtype=np.float64)
+    valid = np.zeros(n, dtype=np.bool_)
+
+    for i in range(n):
+        rng, los_vec = geodist(rs[i, :], rr)
+        geom[i] = rng
+        los[i, :] = los_vec
+        az_val, el_val = satazel(pos, los_vec)
+        az_out[i] = az_val
+        el_out[i] = el_val
+        if el_val < elmin:
+            continue
+        valid[i] = True
+
+        if use_tropo:
+            mapfh, mapfw = _tropmapf_dispatch(doy, pos, el_val, trp_model)
+            trop[i] = mapfh * trop_hs + mapfw * trop_wet
+
+        if use_iono:
+            iono[i] = klobuchar_delay(tow, pos[0], pos[1], az_val, el_val,
+                                      alpha, beta)
+
+    return geom, az_out, el_out, los, trop, iono, valid
 
 def ionmodel(t, pos, az, el, nav=None, model=uIonoModel.KLOBUCHAR, cs=None):
     """ ionosphere delay estimation """
 
     if model == uIonoModel.KLOBUCHAR:
-        diono = ionKlobuchar(t, pos, az, el, nav.ion)
+        _, tow = time2gpst(t)
+        ion_params = getattr(nav, 'ion', None)
+        if ion_params is not None and len(ion_params) >= 2:
+            alpha = np.asarray(ion_params[0], dtype=np.float64).reshape(4)
+            beta = np.asarray(ion_params[1], dtype=np.float64).reshape(4)
+        else:
+            alpha = np.zeros(4, dtype=np.float64)
+            beta = np.zeros(4, dtype=np.float64)
+        pos_arr = np.asarray(pos, dtype=np.float64)
+        diono = klobuchar_delay(
+            float(tow),
+            float(pos_arr[0]),
+            float(pos_arr[1]),
+            float(az),
+            float(el),
+            alpha,
+            beta,
+        )
     elif model == uIonoModel.SBAS:
         if cs is None or cs.iodi < 0:
-            diono = ionKlobuchar(t, pos, az, el, nav.ion)
-            return diono
+            _, tow = time2gpst(t)
+            ion_params = getattr(nav, 'ion', None)
+            if ion_params is not None and len(ion_params) >= 2:
+                alpha = np.asarray(ion_params[0], dtype=np.float64).reshape(4)
+                beta = np.asarray(ion_params[1], dtype=np.float64).reshape(4)
+            else:
+                alpha = np.zeros(4, dtype=np.float64)
+                beta = np.zeros(4, dtype=np.float64)
+            pos_arr = np.asarray(pos, dtype=np.float64)
+            return klobuchar_delay(
+                float(tow),
+                float(pos_arr[0]),
+                float(pos_arr[1]),
+                float(az),
+                float(el),
+                alpha,
+                beta,
+            )
         diono, _ = ionoSBAS(t, pos, az, el, cs)
         if diono == 0.0:
-            diono = ionKlobuchar(t, pos, az, el, nav.ion)
+            _, tow = time2gpst(t)
+            ion_params = getattr(nav, 'ion', None)
+            if ion_params is not None and len(ion_params) >= 2:
+                alpha = np.asarray(ion_params[0], dtype=np.float64).reshape(4)
+                beta = np.asarray(ion_params[1], dtype=np.float64).reshape(4)
+            else:
+                alpha = np.zeros(4, dtype=np.float64)
+                beta = np.zeros(4, dtype=np.float64)
+            pos_arr = np.asarray(pos, dtype=np.float64)
+            diono = klobuchar_delay(
+                float(tow),
+                float(pos_arr[0]),
+                float(pos_arr[1]),
+                float(az),
+                float(el),
+                alpha,
+                beta,
+            )
 
     return diono  # iono delay at L1 [m]
 
@@ -257,17 +475,46 @@ class stdpos(pppos):
         el = np.zeros(n)
         az = np.zeros(n)
         e = np.zeros((n, 3))
-        rr_ = rr.copy()
+        rr_ = np.ascontiguousarray(rr.copy(), dtype=np.float64)
 
         # Geodetic position
         #
-        pos = ecef2pos(rr_)
+        pos = np.asarray(ecef2pos(rr_), dtype=np.float64)
 
         if self.nav.trop_opt == 0:  # use tropo model
-            # Zenith tropospheric dry and wet delays at user position
-            #
-            trop_hs, trop_wet, _ = tropmodel(obs.t, pos,
-                                             model=self.nav.trpModel)
+            trop_hs, trop_wet, _ = tropmodel(obs.t, pos, model=self.nav.trpModel)
+        else:
+            trop_hs = 0.0
+            trop_wet = 0.0
+
+        _, tow = time2gpst(obs.t)
+        doy = time2doy(obs.t)
+        ion_params = getattr(self.nav, 'ion', None)
+        if ion_params is not None and len(ion_params) >= 2:
+            alpha = np.asarray(ion_params[0], dtype=np.float64).reshape(4)
+            beta = np.asarray(ion_params[1], dtype=np.float64).reshape(4)
+        else:
+            alpha = np.zeros(4, dtype=np.float64)
+            beta = np.zeros(4, dtype=np.float64)
+
+        use_tropo = 1 if self.nav.trop_opt == 0 else 0
+        use_iono = 1 if self.nav.iono_opt == 0 else 0
+
+        geom_all, az_all, el_all, los_all, trop_all, iono_all, valid_mask = compute_geometry_and_delays(
+            np.ascontiguousarray(np.asarray(rs, dtype=np.float64)),
+            rr_,
+            pos,
+            float(self.nav.elmin),
+            float(doy),
+            float(tow),
+            alpha,
+            beta,
+            float(trop_hs),
+            float(trop_wet),
+            int(use_tropo),
+            int(use_iono),
+            int(self.nav.trpModel),
+        )
 
         for i in range(n):
 
@@ -279,30 +526,24 @@ class stdpos(pppos):
             if np.any(self.nav.edt[sat-1, :] > 0):
                 continue
 
+            if not valid_mask[i]:
+                continue
+
             # Geometric distance corrected for Earth rotation
             # during flight time
             #
-            r, e[i, :] = geodist(rs[i, :], rr_)
-            az[i], el[i] = satazel(pos, e[i, :])
-            if el[i] < self.nav.elmin:
-                continue
+            r = geom_all[i]
+            e[i, :] = los_all[i]
+            az[i] = az_all[i]
+            el[i] = el_all[i]
 
             if self.nav.trop_opt == 0:  # use model
-                # Tropospheric delay mapping functions
-                #
-                mapfh, mapfw = tropmapf(obs.t, pos, el[i],
-                                        model=self.nav.trpModel)
-
-                # Tropospheric delay
-                #
-                trop = mapfh*trop_hs + mapfw*trop_wet
+                trop = trop_all[i]
             else:
                 trop = 0.0
 
             if self.nav.iono_opt == 0:  # use model
-                # Ionospheric delay
-                iono = ionmodel(obs.t, pos, az[i], el[i], self.nav,
-                                model=self.ionoModel, cs=cs)
+                iono = iono_all[i]
             else:
                 iono = 0.0
 
@@ -365,60 +606,65 @@ class stdpos(pppos):
         """
 
         nf = self.nav.nf if self.nav.rmode == 0 else 1
-        # number of frequencies (or signals)
+        icb_idx = self.ICB()
 
-        ns = len(el)  # number of satellites
-        nc = len(obs.sig.keys())  # number of constellations
+        sat_ids = np.ascontiguousarray(np.asarray(sat, dtype=np.int64))
+        sat_systems = np.empty(sat_ids.size, dtype=np.int64)
+        for idx, sat_id in enumerate(sat_ids):
+            sys_idx, _ = sat2prn(int(sat_id))
+            sat_systems[idx] = int(sys_idx)
 
-        nb = np.zeros(nc*nf, dtype=int)
-        Rj = np.zeros(ns*nf)
+        sig_map = getattr(obs, 'sig', {})
+        if sig_map:
+            sys_order = np.array([int(sys) for sys in sig_map.keys()], dtype=np.int64)
+        else:
+            sys_order = np.unique(sat_systems).astype(np.int64)
+        sys_order = np.ascontiguousarray(sys_order)
 
-        nv = 0
-        b = 0
+        edt = getattr(self.nav, 'edt', None)
+        if edt is not None:
+            edt_values = np.ascontiguousarray(np.asarray(edt, dtype=np.float64))
+        else:
+            edt_values = np.empty((0,), dtype=np.float64)
 
-        H = np.zeros((ns*nf, self.nav.nx))
-        v = np.zeros(ns*nf)
+        eratio = np.ascontiguousarray(np.asarray(self.nav.eratio, dtype=np.float64))
+        err = np.ascontiguousarray(np.asarray(self.nav.err, dtype=np.float64))
 
-        # Loop over constellations
-        #
-        for sys in obs.sig.keys():
+        y_arr = np.ascontiguousarray(np.asarray(y, dtype=np.float64))
+        e_arr = np.ascontiguousarray(np.asarray(e, dtype=np.float64))
+        el_arr = np.ascontiguousarray(np.asarray(el, dtype=np.float64))
 
-            # Loop over twice the number of frequencies
-            #
-            for f in range(0, nf):
-                # Select satellites from one constellation only
-                #
-                idx = self.sysidx(sat, sys)
+        user_height = 0.0
+        baseline = 0.0
+        if self.nav.smode == 2:
+            user_height = float(ecef2pos(self.nav.x[0:3])[2])
+            baseline = float(getattr(self.nav, 'baseline', 0.0))
 
-                if len(idx) == 0:
-                    continue
+        if sat_ids.size == 0 or sys_order.size == 0:
+            v = np.zeros(0, dtype=float)
+            H = np.zeros((0, self.nav.nx), dtype=float)
+            Rj = np.zeros(0, dtype=float)
+            nb = np.zeros(0, dtype=int)
+        else:
+            v, H, Rj, nb = _assemble_sdres_blocks(
+                y_arr,
+                e_arr,
+                el_arr,
+                sat_ids,
+                sat_systems,
+                sys_order,
+                int(nf),
+                int(self.nav.nx),
+                int(icb_idx),
+                eratio,
+                err,
+                int(self.nav.smode),
+                edt_values,
+                float(user_height),
+                float(baseline),
+            )
 
-                # Loop over satellites
-                #
-                for j in idx:
-
-                    # Skip edited observations
-                    #
-                    if np.any(self.nav.edt[sat[j]-1, :] > 0):
-                        continue
-
-                    v[nv] = y[j, f]
-
-                    # SD line-of-sight vectors
-                    #
-                    H[nv, 0:3] = -e[j, :]
-                    H[nv, self.ICB()] = 1.0
-
-                    Rj[nv] = self.varerr(self.nav, el[j], f)
-
-                    nb[b] += 1  # counter for single-differences per signal
-                    nv += 1  # counter for single-difference observations
-
-                b += 1  # counter for signal (pseudrange+carrier-phase)
-
-        v = np.resize(v, nv)
-        H = np.resize(H, (nv, self.nav.nx))
-        R = self.ddcov(nb, b, Rj, nv)
+        R = self.ddcov(nb, nb.size, Rj, v.size)
 
         return v, H, R
 
