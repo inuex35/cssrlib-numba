@@ -21,7 +21,15 @@ class rtkpos(pppos):
         super().__init__(nav=nav, pos0=pos0, logfile=logfile,
                          trop_opt=0, iono_opt=0, phw_opt=0)
 
-        self.base_nav = deepcopy(self.nav)
+        # Temporarily detach the log file handle: deepcopy cannot pickle an
+        # open TextIOWrapper. Share the same handle between rover/base nav.
+        fout = getattr(self.nav, 'fout', None)
+        self.nav.fout = None
+        try:
+            self.base_nav = deepcopy(self.nav)
+        finally:
+            self.nav.fout = fout
+        self.base_nav.fout = fout
         if base_nav is not None:
             self._override_nav(self.base_nav, base_nav)
 
@@ -30,6 +38,7 @@ class rtkpos(pppos):
         self.nav.sig_p0 = 30.0  # [m]
         self.nav.thresar = 2.0  # AR acceptance threshold
         self.nav.armode = 1     # AR is enabled
+        self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
 
     def base_process(self, obs, obsb, rs, dts, svh):
         """ processing for base station in RTK """
