@@ -1672,7 +1672,7 @@ class pppos():
             Qb = DP[:, ix[:, 0] - na] - DP[:, ix[:, 1] - na]
             Qab = self.nav.P[0:na, ix[:, 0]] - self.nav.P[0:na, ix[:, 1]]
 
-            b, s, nfix, Ps = mlambda(y, Qb, armode=armode, P0=P0)
+            b, s, nfix, Ps = mlambda(y, Qb, parmode=armode, P0=P0)
             if nfix <= 0:
                 break
 
@@ -1731,7 +1731,7 @@ class pppos():
         Qab = self.nav.P[0:na, ix[:, 0]]-self.nav.P[0:na, ix[:, 1]]
 
         # MLAMBDA ILS
-        b, s, nfix, Ps = mlambda(y, Qb, armode=armode, P0=P0)
+        b, s, nfix, Ps = mlambda(y, Qb, parmode=armode, P0=P0)
         if nfix > 0 and (armode == 2 or s[0] <= 0.0 or
                          s[1]/s[0] >= self.nav.thresar):
             self.nav.xa = self.nav.x[0:na].copy()
