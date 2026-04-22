@@ -793,6 +793,12 @@ class pppos():
     def udstate(self, obs):
         """ time propagation of states and initialize """
 
+        # First call (nav.t never set): timediff would yield the full TOW
+        # (~3.5e5 s) and Phi/process-noise propagation would explode P. Treat
+        # this as dt=0 so the time-update is a no-op until obs.t is recorded
+        # at the end of process().
+        if getattr(self.nav.t, 'time', 0) == 0:
+            self.nav.t = obs.t
         tt = timediff(obs.t, self.nav.t)
 
         ns = len(obs.sat)
