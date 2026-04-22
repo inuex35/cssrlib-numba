@@ -71,7 +71,7 @@ class uGNSS(IntEnum):
     GALMAX = 36
     QZSMAX = 17
     BDSMAX = 63
-    GLOMAX = 27
+    GLOMAX = 32
     SBSMAX = 39
     IRNMAX = 14
 
@@ -1012,6 +1012,45 @@ def time2doy(t):
     ep[1] = ep[2] = 1.0
     ep[3] = ep[4] = ep[5] = 0.0
     return timediff(t, epoch2time(ep))/86400+1
+
+
+def interpc(coef, lat):
+    """ linear interpolation (lat step=15) """
+    i = int(lat/15.0)
+    m = coef.shape[1]-1
+    if i < 1:
+        return coef[:, 0]
+    if i > m:
+        return coef[:, m]
+    d = lat/15.0-i
+    return coef[:, i-1]*(1.0-d)+coef[:, i]*d
+
+
+def mapfParam(t, lat):
+    """ mapping function parameters based on lat, time """
+    # lat = [15,30,45,60,75]
+    # hs(average) [a,b,c] hs(amplitude) [a,b,c] wet [a,b,c]
+    coef = np.array([
+        [1.2769934E-3, 1.2683230E-3, 1.2465397E-3, 1.2196049E-3, 1.2045996E-3],
+        [2.9153695E-3, 2.9152299E-3, 2.9288445E-3, 2.9022565E-3, 2.9024912E-3],
+        [62.610505E-3, 62.837393E-3, 63.721774E-3, 63.824265E-3, 64.258455E-3],
+        [0.0000000E-0, 1.2709626E-5, 2.6523662E-5, 3.4000452E-5, 4.1202191E-5],
+        [0.0000000E-0, 2.1414979E-5, 3.0160779E-5, 7.2562722E-5, 11.723375E-5],
+        [0.0000000E-0, 9.0128400E-5, 4.3497037E-5, 84.795348E-5, 170.37206E-5],
+        [5.8021897E-4, 5.6794847E-4, 5.8118019E-4, 5.9727542E-4, 6.1641693E-4],
+        [1.4275268E-3, 1.5138625E-3, 1.4572752E-3, 1.5007428E-3, 1.7599082E-3],
+        [4.3472961E-2, 4.6729510E-2, 4.3908931E-2, 4.4626982E-2, 5.4736038E-2],
+    ])
+    y = (time2doy(t)-28.0)/365.25
+    if lat < 0.0:
+        y += 0.5
+    cosy = np.cos(2.0*np.pi*y)
+    c = interpc(coef, np.abs(np.rad2deg(lat)))
+    ah = c[0:3]-c[3:6]*cosy
+    aw = c[6:9]
+
+    # return [ah,bh,ch], [aw,bw,cw]
+    return ah, aw
 
 
 def str2time(s, i, n):
