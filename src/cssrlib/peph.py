@@ -828,7 +828,11 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
 
             # Satellite PCO in local antenna frame
             #
-            off0 += fac0_*ant.off[sig]
+            if sig in ant.off:
+                off0 += fac0_*ant.off[sig]
+            else:
+                print(f"sig={sig} not in antenna database.")
+                off0 = np.ones((1, 3))*np.nan
 
     off0 = np.ascontiguousarray(off0, dtype=np.float64)
     e = np.ascontiguousarray(e, dtype=np.float64)
@@ -1158,14 +1162,14 @@ def utc2gmst(t: gtime_t, ut1_utc):
     return np.fmod(gmst, 86400.0)*np.pi/43200.0  # 0 <= gmst <= 2*PI
 
 
-def orb2ecef(time, rs):
+def orb2ecef(time, rs, rsun=None):
     """
     Rotation matrix from satellite antenna frame to ECEF frame assuming
     standard yaw attitude law
     """
 
-    erpv = np.zeros(5)
-    rsun, _, _ = sunmoonpos(gpst2utc(time), erpv, True)
+    if rsun is None:
+        rsun, _, _ = sunmoonpos(gpst2utc(time), np.zeros(5), True)
     r = -rs
     ez = r/np.linalg.norm(r)
     r = rsun-rs
