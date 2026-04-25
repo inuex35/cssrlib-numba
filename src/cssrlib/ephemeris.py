@@ -26,19 +26,45 @@ MAXDTOE_t = {uGNSS.GPS: 7201.0, uGNSS.GAL: 14400.0, uGNSS.QZS: 7201.0,
              uGNSS.SBS: 360.0}
 
 
+# Module-level cache for findeph: maps id(nav_list) -> (per_sat_dict, length).
+# Keyed by id() because nav lists don't accept setattr. Invalidated on length
+# change (caller appends/replaces ephemerides).
+_FINDEPH_CACHE = {}
+
+
+def _findeph_index(nav):
+    key = id(nav)
+    n = len(nav)
+    cached = _FINDEPH_CACHE.get(key)
+    if cached is not None and cached[1] == n:
+        return cached[0]
+    idx = {}
+    for eph_ in nav:
+        idx.setdefault(eph_.sat, []).append(eph_)
+    _FINDEPH_CACHE[key] = (idx, n)
+    # Bound cache size to avoid leaks across many ephemeris streams.
+    if len(_FINDEPH_CACHE) > 32:
+        _FINDEPH_CACHE.pop(next(iter(_FINDEPH_CACHE)))
+    return idx
+
+
 def findeph(nav, t, sat, iode=-1, mode=0):
     """ find ephemeris for sat """
     sys, _ = sat2prn(sat)
     eph = None
     tmax = MAXDTOE_t[sys]
     tmin = tmax + 1.0
-    for eph_ in nav:
-        if eph_.sat != sat or (iode >= 0 and iode != eph_.iode):
+
+    idx = _findeph_index(nav)
+    candidates = idx.get(sat, ())
+
+    for eph_ in candidates:
+        if iode >= 0 and iode != eph_.iode:
             continue
         if eph_.mode != mode:
             continue
         dt = abs(timediff(t, eph_.toe))
-        if dt > tmax or eph_.mode != mode:
+        if dt > tmax:
             continue
         if iode >= 0:
             return eph_

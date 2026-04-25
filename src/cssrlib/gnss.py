@@ -900,12 +900,9 @@ def utc2gpst(t: gtime_t):
 
 def timeadd(t: gtime_t, sec: float):
     """ return time added with sec """
-    tr = deepcopy(t)
-    tr.sec += sec
-    tt = floor(tr.sec)
-    tr.time += int(tt)
-    tr.sec -= tt
-    return tr
+    new_sec = t.sec + sec
+    tt = floor(new_sec)
+    return gtime_t(t.time + int(tt), new_sec - tt)
 
 
 def timediff(t1: gtime_t, t2: gtime_t):
@@ -1114,8 +1111,14 @@ def prn2sat(sys, prn):
     return sat
 
 
+_SAT2PRN_CACHE = {}
+
+
 def sat2prn(sat):
-    """ convert sat to sys+prn """
+    """ convert sat to sys+prn (cached, no recomputation per call) """
+    cached = _SAT2PRN_CACHE.get(sat)
+    if cached is not None:
+        return cached
     if sat > uGNSS.MAXSAT:
         prn = 0
         sys = uGNSS.NONE
@@ -1140,7 +1143,9 @@ def sat2prn(sat):
     else:
         prn = sat
         sys = uGNSS.GPS
-    return (sys, prn)
+    out = (sys, prn)
+    _SAT2PRN_CACHE[sat] = out
+    return out
 
 
 def sat2id(sat):
