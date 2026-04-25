@@ -6,7 +6,7 @@ import numpy as np
 from numba import njit
 
 from cssrlib.ephemeris import satposs
-from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
+from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST, SAT_SYS_ARR
 from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, time2str, timediff
 from cssrlib.gnss import gpst2utc, uIonoModel, time2doy
 from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
@@ -1584,14 +1584,14 @@ class pppos():
         nv = 0
         xa = self.nav.x.copy()
         xa[0:self.nav.na] = self.nav.xa[0:self.nav.na]
+        sys_lookup = SAT_SYS_ARR
 
         for m in range(uGNSS.GNSSMAX):
             for f in range(self.nav.nf):
                 n = 0
                 index = []
                 for i in range(uGNSS.MAXSAT):
-                    sys, _ = sat2prn(i+1)
-                    if sys != m or self.nav.fix[i, f] != 2:
+                    if sys_lookup[i+1] != m or self.nav.fix[i, f] != 2:
                         continue
                     index.append(self.IB(i+1, f, self.nav.na))
                     n += 1
@@ -1610,15 +1610,17 @@ class pppos():
         na = nav.na
         ix = np.zeros((n, 2), dtype=int)
         nav.fix = np.zeros((n, nav.nf), dtype=int)
+        # O(1) sat membership check + ndarray sat→sys lookup
+        sat_set = set(int(s) for s in sat)
+        sys_lookup = SAT_SYS_ARR
         for m in range(uGNSS.GNSSMAX):
             k = na
             for f in range(nav.nf):
                 for i in range(k, k+n):
                     sat_i = i-k+1
-                    sys, _ = sat2prn(sat_i)
-                    if (sys != m):
+                    if sys_lookup[sat_i] != m:
                         continue
-                    if sat_i not in sat or nav.x[i] == 0.0 \
+                    if sat_i not in sat_set or nav.x[i] == 0.0 \
                        or nav.vsat[sat_i-1, f] == 0:
                         continue
                     if nav.el[sat_i-1] >= nav.elmaskar:
@@ -1628,10 +1630,9 @@ class pppos():
                         nav.fix[sat_i-1, f] = 1
                 for j in range(k, k+n):
                     sat_j = j-k+1
-                    sys, _ = sat2prn(sat_j)
-                    if (sys != m):
+                    if sys_lookup[sat_j] != m:
                         continue
-                    if i == j or sat_j not in sat or nav.x[j] == 0.0 \
+                    if i == j or sat_j not in sat_set or nav.x[j] == 0.0 \
                        or nav.vsat[sat_j-1, f] == 0:
                         continue
                     if nav.el[sat_j-1] >= nav.elmaskar:
@@ -1769,13 +1770,13 @@ class pppos():
         v = np.zeros(nb)
         H = np.zeros((nb, self.nav.nx))
         nv = 0
+        sys_lookup = SAT_SYS_ARR
         for m in range(uGNSS.GNSSMAX):
             for f in range(self.nav.nf):
                 n = 0
                 index = []
                 for i in range(uGNSS.MAXSAT):
-                    sys, _ = sat2prn(i+1)
-                    if sys != m or self.nav.fix[i, f] != 2:
+                    if sys_lookup[i+1] != m or self.nav.fix[i, f] != 2:
                         continue
                     index.append(self.IB(i+1, f, self.nav.na))
                     n += 1

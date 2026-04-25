@@ -58,12 +58,20 @@ def findeph(nav, t, sat, iode=-1, mode=0):
     idx = _findeph_index(nav)
     candidates = idx.get(sat, ())
 
+    # Pull t.time / t.sec out of the loop so we can inline timediff into
+    # a single subtraction per candidate (findeph runs millions of times
+    # in a typical session and timediff dominated its profile).
+    t_time = t.time
+    t_sec = t.sec
     for eph_ in candidates:
         if iode >= 0 and iode != eph_.iode:
             continue
         if eph_.mode != mode:
             continue
-        dt = abs(timediff(t, eph_.toe))
+        toe = eph_.toe
+        dt = (t_time - toe.time) + (t_sec - toe.sec)
+        if dt < 0:
+            dt = -dt
         if dt > tmax:
             continue
         if iode >= 0:
