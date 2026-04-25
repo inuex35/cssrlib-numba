@@ -40,12 +40,18 @@ class rtkpos(pppos):
         self.nav.armode = 1     # AR is enabled
         self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
 
-    def base_process(self, obs, obsb, rs, dts, svh):
-        """ processing for base station in RTK """
+    def base_process(self, obs, obsb, rs, dts, svh,
+                     rsb=None, vsb=None, dtsb=None, svhb=None):
+        """ processing for base station in RTK.
+
+        Pre-computed base satellite states (rsb/vsb/dtsb/svhb) may be passed
+        to avoid recomputing satposs when the caller has them already.
+        """
         nav_rover = self.nav
         nav_base = self.base_nav
 
-        rsb, vsb, dtsb, svhb, _ = satposs(obsb, nav_base)
+        if rsb is None or vsb is None or dtsb is None or svhb is None:
+            rsb, vsb, dtsb, svhb, _ = satposs(obsb, nav_base)
         with self._use_nav(nav_base):
             yr, er, elr = self.zdres(
                 obsb, None, None, rsb, vsb, dtsb, nav_base.rb, 0)
