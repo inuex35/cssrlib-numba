@@ -1764,8 +1764,26 @@ class pppos():
 
         return nb, xa
 
+    def holdamb_flags(self):
+        """Mark resolved ambiguities as held (nav.fix[i, f]: 2 → 3) without
+        running the Kalman update. Use this in pipelines that overwrite
+        nav.x / nav.P from another source (e.g. GTSAM marginals) every
+        epoch — the kfupdate result would be discarded anyway. Returns
+        the number of held ambiguities for sanity checking.
+        """
+        n_held = 0
+        sys_lookup = SAT_SYS_ARR
+        nf = self.nav.nf
+        fix = self.nav.fix
+        for i in range(uGNSS.MAXSAT):
+            for f in range(nf):
+                if fix[i, f] == 2:
+                    fix[i, f] = 3
+                    n_held += 1
+        return n_held
+
     def holdamb(self, xa):
-        """ hold integer ambiguity """
+        """ hold integer ambiguity (with full KF constraint update) """
         nb = self.nav.nx-self.nav.na
         v = np.zeros(nb)
         H = np.zeros((nb, self.nav.nx))
