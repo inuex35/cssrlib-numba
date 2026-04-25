@@ -1846,25 +1846,24 @@ class pppos():
         #
         ns = uGNSS.MAXSAT
 
-        # Reset previous editing results
-        #
-        self.nav.edt = np.zeros((ns, self.nav.nf), dtype=int)
+        # Default-edited; we'll reset to 0 only for observed sats whose
+        # checks all pass. Saves ~200 redundant iterations over unobserved
+        # PRNs in the original loop.
+        self.nav.edt = np.ones((ns, self.nav.nf), dtype=int)
 
-        # Build O(1) lookups instead of scanning obs.sat each iteration.
+        # Build O(1) lookups for observed sats.
         obs_sat_arr = np.asarray(obs.sat)
         sat_to_idx = {int(s): k for k, s in enumerate(obs_sat_arr)}
+        sys_lookup = SAT_SYS_ARR
 
-        # Loop over all satellites
-        #
         sat = []
-        for i in range(ns):
+        for sat_i in (int(s) for s in obs_sat_arr):
 
-            sat_i = i+1
-            sys_i, _ = sat2prn(sat_i)
-
-            if sat_i not in sat_to_idx:
-                self.nav.edt[i, :] = 1
-                continue
+            i = sat_i - 1
+            sys_i = sys_lookup[sat_i]
+            # Mark observed sat as not edited; sub-checks below may
+            # re-set edt[i, f] = 1 for individual frequencies.
+            self.nav.edt[i, :] = 0
 
             # Check satellite exclusion
             #
