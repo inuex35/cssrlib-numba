@@ -240,6 +240,10 @@ class uIonoModel(IntEnum):
 
 
 class rSigRnx():
+    # Class-level memoization for frequency()/wavelength(): keyed by
+    # (sys, sig, k) since frequency depends only on those values, not on
+    # which instance carries them.
+    _FREQ_CACHE = {}
 
     def __init__(self, *args, **kwargs):
         """ Constructor """
@@ -443,8 +447,17 @@ class rSigRnx():
         return uSIG((self.sig//100)*100)
 
     def frequency(self, k=None):
-        """ frequency in Hz """
+        """ frequency in Hz (cached) """
+        cache = self.__class__._FREQ_CACHE
+        key = (int(self.sys), int(self.sig), k)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached[0]  # Sentinel-wrapped to allow None entries.
+        f = self._frequency_compute(k)
+        cache[key] = (f,)
+        return f
 
+    def _frequency_compute(self, k=None):
         if self.sys == uGNSS.GPS:
             if int(self.sig / 100) == 1:
                 return rCST.FREQ_G1
