@@ -5,7 +5,7 @@ module for RTK positioning
 
 from cssrlib.pppssr import pppos
 import numpy as np
-from copy import deepcopy
+from copy import copy, deepcopy
 from contextlib import contextmanager
 from cssrlib.ephemeris import satposs
 
@@ -74,7 +74,9 @@ class rtkpos(pppos):
         y[ns:, :] = yr[ir, :]
         e[ns:, :] = er[ir, :]
 
-        obs_ = deepcopy(obs)
+        # Shallow copy is safe: callers only read obs_.sat / obs_.L / obs_.P
+        # / obs_.sig / obs_.t — none of which are mutated downstream.
+        obs_ = copy(obs)
         obs_.sat = obs.sat[iu]
 
         rover_L = obs.L[iu, :]

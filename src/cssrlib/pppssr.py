@@ -1570,9 +1570,10 @@ class pppos():
 
         PHt = P@H.T
         S = H@PHt+R
-        K = PHt@np.linalg.inv(S)
+        # K = PHt @ inv(S) computed via solve to avoid the explicit
+        # inverse (~2x cheaper for symmetric positive-definite S).
+        K = np.linalg.solve(S.T, PHt.T).T
         x += K@v
-        # P = P - K@H@P
         IKH = np.eye(P.shape[0])-K@H
         P = IKH@P@IKH.T + K@R@K.T  # Joseph stabilized version
 
@@ -1830,6 +1831,10 @@ class pppos():
         #
         self.nav.edt = np.zeros((ns, self.nav.nf), dtype=int)
 
+        # Build O(1) lookups instead of scanning obs.sat each iteration.
+        obs_sat_arr = np.asarray(obs.sat)
+        sat_to_idx = {int(s): k for k, s in enumerate(obs_sat_arr)}
+
         # Loop over all satellites
         #
         sat = []
@@ -1838,7 +1843,7 @@ class pppos():
             sat_i = i+1
             sys_i, _ = sat2prn(sat_i)
 
-            if sat_i not in obs.sat:
+            if sat_i not in sat_to_idx:
                 self.nav.edt[i, :] = 1
                 continue
 
@@ -1852,7 +1857,7 @@ class pppos():
                                                 sat2id(sat_i)))
                 continue
 
-            j = np.where(obs.sat == sat_i)[0][0]
+            j = sat_to_idx[sat_i]
 
             # Check for valid orbit and clock offset
             #
