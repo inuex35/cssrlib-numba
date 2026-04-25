@@ -1111,39 +1111,49 @@ def prn2sat(sys, prn):
     return sat
 
 
-_SAT2PRN_CACHE = {}
+def _build_sat_lookup():
+    """Pre-compute sat → sys, sat → prn arrays for O(1) tight-loop access."""
+    n = int(uGNSS.MAXSAT) + 1
+    sys_arr = np.full(n, int(uGNSS.NONE), dtype=np.int32)
+    prn_arr = np.zeros(n, dtype=np.int32)
+    cache = {}
+    for sat in range(1, n):
+        if sat > uGNSS.MAXSAT:
+            prn = 0
+            sys = uGNSS.NONE
+        elif sat > uGNSS.IRNMIN:
+            prn = sat-uGNSS.IRNMIN; sys = uGNSS.IRN
+        elif sat > uGNSS.SBSMIN:
+            prn = sat+119-uGNSS.SBSMIN; sys = uGNSS.SBS
+        elif sat > uGNSS.GLOMIN:
+            prn = sat-uGNSS.GLOMIN; sys = uGNSS.GLO
+        elif sat > uGNSS.BDSMIN:
+            prn = sat-uGNSS.BDSMIN; sys = uGNSS.BDS
+        elif sat > uGNSS.QZSMIN:
+            prn = sat+192-uGNSS.QZSMIN; sys = uGNSS.QZS
+        elif sat > uGNSS.GALMIN:
+            prn = sat-uGNSS.GALMIN; sys = uGNSS.GAL
+        else:
+            prn = sat; sys = uGNSS.GPS
+        sys_arr[sat] = int(sys)
+        prn_arr[sat] = int(prn)
+        cache[sat] = (sys, prn)
+    return sys_arr, prn_arr, cache
+
+
+SAT_SYS_ARR, SAT_PRN_ARR, _SAT2PRN_CACHE = _build_sat_lookup()
 
 
 def sat2prn(sat):
-    """ convert sat to sys+prn (cached, no recomputation per call) """
+    """ convert sat to sys+prn (cached) """
     cached = _SAT2PRN_CACHE.get(sat)
     if cached is not None:
         return cached
+    # Out-of-range fallback (extremely rare).
     if sat > uGNSS.MAXSAT:
-        prn = 0
-        sys = uGNSS.NONE
-    elif sat > uGNSS.IRNMIN:
-        prn = sat-uGNSS.IRNMIN
-        sys = uGNSS.IRN
-    elif sat > uGNSS.SBSMIN:
-        prn = sat+119-uGNSS.SBSMIN
-        sys = uGNSS.SBS
-    elif sat > uGNSS.GLOMIN:
-        prn = sat-uGNSS.GLOMIN
-        sys = uGNSS.GLO
-    elif sat > uGNSS.BDSMIN:
-        prn = sat-uGNSS.BDSMIN
-        sys = uGNSS.BDS
-    elif sat > uGNSS.QZSMIN:
-        prn = sat+192-uGNSS.QZSMIN
-        sys = uGNSS.QZS
-    elif sat > uGNSS.GALMIN:
-        prn = sat-uGNSS.GALMIN
-        sys = uGNSS.GAL
+        out = (uGNSS.NONE, 0)
     else:
-        prn = sat
-        sys = uGNSS.GPS
-    out = (sys, prn)
+        out = (uGNSS.NONE, 0)
     _SAT2PRN_CACHE[sat] = out
     return out
 
