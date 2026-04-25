@@ -40,6 +40,40 @@ class rtkpos(pppos):
         self.nav.armode = 1     # AR is enabled
         self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
 
+    def base_process_dd_only(self, obs, obsb, rs, dts, svh,
+                             rsb=None, dtsb=None, svhb=None):
+        """Light variant of base_process for DD-only pipelines.
+
+        Skips zdres on the base receiver (y / e arrays are unused by
+        callers that build their own DD residuals downstream), so this
+        is the right entry point when the rover-side state estimate is
+        being maintained outside cssrlib (e.g. in a GTSAM factor graph).
+
+        Returns (iu, obs_), where obs_ carries rover-base differenced
+        L / P at the common satellite set. Pre-computed base satellite
+        states (rsb / dtsb / svhb) may be passed to skip satposs.
+        """
+        nav_rover = self.nav
+        nav_base = self.base_nav
+
+        if rsb is None or dtsb is None or svhb is None:
+            rsb, _, dtsb, svhb, _ = satposs(obsb, nav_base)
+
+        with self._use_nav(nav_base):
+            sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb, rr=nav_base.rb)
+        with self._use_nav(nav_rover):
+            sat_ed_u = self.qcedit(obs, rs, dts, svh)
+
+        sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
+        ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
+        iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
+
+        obs_ = copy(obs)
+        obs_.sat = obs.sat[iu]
+        obs_.L = self._build_frequency_diff(obs.L[iu, :], obsb.L[ir, :])
+        obs_.P = self._build_frequency_diff(obs.P[iu, :], obsb.P[ir, :])
+        return iu, obs_
+
     def base_process(self, obs, obsb, rs, dts, svh,
                      rsb=None, vsb=None, dtsb=None, svhb=None):
         """ processing for base station in RTK.
