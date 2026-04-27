@@ -64,6 +64,8 @@ class rtkpos(pppos):
         with self._use_nav(nav_rover):
             sat_ed_u = self.qcedit(obs, rs, dts, svh)
 
+        np.maximum(nav_rover.slip, nav_base.slip, out=nav_rover.slip)
+
         sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
         ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
         iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
@@ -95,6 +97,11 @@ class rtkpos(pppos):
             sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb, rr=nav_base.rb)
         with self._use_nav(nav_rover):
             sat_ed_u = self.qcedit(obs, rs, dts, svh)
+
+        # Propagate base-side cycle-slip flags into the rover so udstate's
+        # ambiguity reset triggers on either-side slips. Without this a
+        # base-only LLI/GF slip would silently corrupt the DD ambiguity.
+        np.maximum(nav_rover.slip, nav_base.slip, out=nav_rover.slip)
 
         # define common satellite between base and rover
         sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
