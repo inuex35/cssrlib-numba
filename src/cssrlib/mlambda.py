@@ -73,7 +73,14 @@ def _reduction(L, d):
     Z = np.eye(n, dtype=np.float64)
     j = n-2
     k = n-2
-    while j >= 0:
+    # LLL reduction safety bound. Convergence is normally fast on a
+    # well-conditioned Q, but a pathological covariance can keep the
+    # swap-and-reset (j = n-2) loop cycling unboundedly. Cap and return
+    # a partially-reduced (L, d, Z); downstream MLAMBDA still works.
+    LOOPMAX = 10000
+    loops = 0
+    while j >= 0 and loops < LOOPMAX:
+        loops += 1
         if j <= k:
             for i in range(j+1, n):
                 mu = np.rint(L[i, j])
@@ -116,13 +123,16 @@ def _reduction(L, d):
 def _msearch(L, d, ahat, ncands):
     n = d.size
     Chi2 = 1e18
+    # See _estimILS for LOOPMAX rationale.
+    LOOPMAX = 10000
+    loop_count = 0
 
     dist = np.zeros(n, dtype=np.float64)
     acond = np.zeros(n, dtype=np.float64)
     zcond = np.zeros(n, dtype=np.int32)
     step = np.zeros(n, dtype=np.int32)
     afixed = np.zeros((n, ncands), dtype=np.float64)
-    sqnorm = np.zeros(ncands, dtype=np.float64)
+    sqnorm = np.full(ncands, 1e18, dtype=np.float64)
 
     acond[-1] = ahat[-1]
     zcond[-1] = _round_to_int(acond[-1])
@@ -138,6 +148,9 @@ def _msearch(L, d, ahat, ncands):
     k = n-1
 
     while not endSearch:
+        loop_count += 1
+        if loop_count > LOOPMAX:
+            break
         newdist = dist[k]+left**2/d[k]
         if newdist < Chi2:
             if k != 0:
@@ -188,11 +201,22 @@ def _msearch(L, d, ahat, ncands):
 def _estimILS(L, d, ahat, ncands):
     n = d.size
     Chi2 = 1e18
+    # RTKLIB lambda.c LOOPMAX. The MLAMBDA tree walk normally finishes
+    # in <LOOPMAX iterations on a well-conditioned Q, but with a
+    # poorly-conditioned float covariance (large d entries) the search
+    # can spawn a near-unbounded number of branches. RTKLIB exits with
+    # "search loop overflow" at 10000; do the same here so a bad epoch
+    # costs ~10 ms instead of tens of seconds. sqnorm is pre-filled
+    # with 1e18 so an early abort registers as "no fix" via the
+    # downstream `s[1]/s[0] >= thresar` check (1e18/1e18 = 1.0 < 3.0).
+    LOOPMAX = 10000
+    loop_count = 0
+    aborted = False
 
     k0 = 1 if (ncands == 1 and n > 1) else 0
 
     afixed = np.zeros((n, ncands), dtype=np.float64)
-    sqnorm = np.zeros(ncands, dtype=np.float64)
+    sqnorm = np.full(ncands, 1e18, dtype=np.float64)
 
     acond = np.zeros(n, dtype=np.float64)
     zcond = np.zeros(n, dtype=np.int32)
@@ -219,6 +243,11 @@ def _estimILS(L, d, ahat, ncands):
     while not endSearch:
         newdist = dist[k]+left[k]**2/d[k]
         while newdist < Chi2:
+            loop_count += 1
+            if loop_count > LOOPMAX:
+                aborted = True
+                endSearch = True
+                break
             if k != 0:
                 k -= 1
                 dist[k] = newdist
@@ -251,9 +280,17 @@ def _estimILS(L, d, ahat, ncands):
 
             newdist = dist[k] + left[k]**2/d[k]
 
+        if aborted:
+            break
+
         ilevel = k
 
         while newdist >= Chi2:
+            loop_count += 1
+            if loop_count > LOOPMAX:
+                aborted = True
+                endSearch = True
+                break
             if k == n-1:
                 endSearch = True
                 break
@@ -262,6 +299,9 @@ def _estimILS(L, d, ahat, ncands):
             left[k] = acond[k]-zcond[k]
             step[k] = -step[k]-_signed_step(step[k])
             newdist = dist[k] + left[k]**2/d[k]
+
+        if aborted:
+            break
 
         path[ilevel:k] = k
         for j in range(ilevel-1, -1, -1):
