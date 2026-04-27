@@ -851,8 +851,12 @@ class pppos():
                 sys_i, _ = sat2prn(sat_)
 
                 self.nav.outc[i, f] += 1
-                reset = (self.nav.outc[i, f] >
-                         self.nav.maxout or np.any(self.nav.edt[i, :] > 0))
+                # Reset on outage, edit (drop), or cycle-slip flag.
+                # nav.slip is set by qcedit on LLI=1 / GF slip; cleared
+                # below once the reset is applied.
+                reset = (self.nav.outc[i, f] > self.nav.maxout
+                         or np.any(self.nav.edt[i, :] > 0)
+                         or np.any(self.nav.slip[i, :] > 0))
                 if sys_i not in obs.sig.keys():
                     continue
 
@@ -862,6 +866,7 @@ class pppos():
                 if reset and self.nav.x[j] != 0.0:
                     self.initx(0.0, 0.0, j)
                     self.nav.outc[i, f] = 0
+                    self.nav.slip[i, f] = 0
 
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
@@ -990,6 +995,9 @@ class pppos():
                                 "{}  {} - init  ionosphere      {:12.3f}\n"
                                 .format(time2str(obs.t), sat2id(sat[i]),
                                         ion[i]))
+
+        # Slip flags consumed: clear so the next qcedit starts clean.
+        self.nav.slip[:] = 0
 
         return 0
 
@@ -2039,10 +2047,16 @@ class pppos():
                 code = int(qc_codes[f])
                 if code == 0:
                     continue
-                self.nav.edt[i, f] = 1
+                # LLI=1 is a cycle-slip notification, not a bad observation:
+                # flag the sat for ambiguity reset in udstate but keep the
+                # measurement (RTKLIB-style behavior). Other codes drop it.
+                if code == 1:
+                    self.nav.slip[i, f] = 1
+                else:
+                    self.nav.edt[i, f] = 1
                 if self.nav.monlevel > 0:
                     if code == 1:
-                        msg = "edit {:4s} - LLI".format(sigsCP[f].str())
+                        msg = "slip {:4s} - LLI".format(sigsCP[f].str())
                     elif code == 2:
                         msg = "edit {:4s} - invalid PR obs".format(
                             sigsPR[f].str())
@@ -2085,10 +2099,12 @@ class pppos():
                 if gf1 != 0.0:
                     self.nav.gf[sat_i] = gf1
                 if slip:
-                    self.nav.edt[i, 0:2] = 1
+                    # GF slip is a cycle-slip event: flag for ambiguity
+                    # reset, do not drop the observation.
+                    self.nav.slip[i, 0:2] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
-                            " {}  {} - edit {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
+                            " {}  {} - slip {:4s} - GF gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
                             .format(time2str(obs.t),
                                     sat2id(sat_i),
                                     sig1.str(), gf_prev, gf1,

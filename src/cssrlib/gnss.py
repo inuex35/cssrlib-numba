@@ -825,6 +825,10 @@ class Nav():
         # carrier phase has been valid. Resets to 0 on outage; used by
         # rtklib_mode arfilter to demote newly-acquired satellites.
         self.lock = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
+        # Cycle-slip flag (LLI or GF slip detected at qcedit). Causes
+        # ambiguity reset in udstate without dropping the observation.
+        # Cleared by udstate after the reset is applied.
+        self.slip = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
 
         # geometry-free combination for cycle-slip detection
         self.gf = np.zeros(uGNSS.MAXSAT)
