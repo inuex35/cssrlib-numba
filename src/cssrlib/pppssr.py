@@ -675,6 +675,17 @@ class pppos():
         self.nav.parmode = 2  # 1: normal, 2: PAR
         self.nav.par_P0 = 0.995  # probability of sussefull AR
 
+        # RTKLIB demo5-faithful AR mode. When True, resamb() uses
+        # resamb_lambda_rtklib() which enforces ratio >= thresar and emulates
+        # manage_amb_LAMBDA's one-satellite round-robin exclusion (no PAR
+        # success-rate bypass). Defaults preserve cssrlib's PAR behavior.
+        self.nav.rtklib_mode = False
+        self.nav.excsat = 0       # last excluded satellite (1..MAXSAT, 0=none)
+        self.nav.prev_ratio1 = 0.0  # ratio before exclusion (previous epoch)
+        self.nav.prev_ratio2 = 0.0  # ratio after exclusion (previous epoch)
+        self.nav.arfilter = True   # drop newly-acquired sats that hurt ratio
+        self.nav.minfixsats = 4    # minimum sats required to attempt AR
+
         # Initial state vector
         #
         self.nav.x[0:3] = pos0
@@ -840,8 +851,12 @@ class pppos():
                 sys_i, _ = sat2prn(sat_)
 
                 self.nav.outc[i, f] += 1
-                reset = (self.nav.outc[i, f] >
-                         self.nav.maxout or np.any(self.nav.edt[i, :] > 0))
+                # Reset on outage, edit (drop), or cycle-slip flag.
+                # nav.slip is set by qcedit on LLI=1 / GF slip; cleared
+                # below once the reset is applied.
+                reset = (self.nav.outc[i, f] > self.nav.maxout
+                         or np.any(self.nav.edt[i, :] > 0)
+                         or np.any(self.nav.slip[i, :] > 0))
                 if sys_i not in obs.sig.keys():
                     continue
 
@@ -851,6 +866,7 @@ class pppos():
                 if reset and self.nav.x[j] != 0.0:
                     self.initx(0.0, 0.0, j)
                     self.nav.outc[i, f] = 0
+                    self.nav.slip[i, f] = 0
 
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
@@ -979,6 +995,9 @@ class pppos():
                                 "{}  {} - init  ionosphere      {:12.3f}\n"
                                 .format(time2str(obs.t), sat2id(sat[i]),
                                         ion[i]))
+
+        # Slip flags consumed: clear so the next qcedit starts clean.
+        self.nav.slip[:] = 0
 
         return 0
 
@@ -1740,6 +1759,10 @@ class pppos():
 
         # MLAMBDA ILS
         b, s, nfix, Ps = mlambda(y, Qb, parmode=armode, P0=P0)
+        # Stash s[0],s[1] so wrappers (e.g. resamb_lambda_rtklib) can read
+        # the ratio without re-running mlambda.
+        self._last_s0 = float(s[0]) if len(s) > 0 else 0.0
+        self._last_s1 = float(s[1]) if len(s) > 1 else 0.0
         if nfix > 0 and (armode == 2 or s[0] <= 0.0 or
                          s[1]/s[0] >= self.nav.thresar):
             self.nav.xa = self.nav.x[0:na].copy()
@@ -1763,6 +1786,92 @@ class pppos():
             nb = 0
 
         return nb, xa
+
+    def resamb_lambda_rtklib(self, sat):
+        """RTKLIB demo5 manage_amb_LAMBDA-equivalent AR.
+
+        Pass 1: full ILS + ratio test (parmode=1, ratio >= nav.thresar).
+        Pass 2 (only if pass 1 failed and at least minfixsats sats are
+        available): exclude one satellite via round-robin (nav.excsat)
+        and retry once. arfilter additionally prefers excluding a
+        newly-acquired sat (nav.lock == 0) when its appearance dropped
+        the ratio.
+
+        Differs from resamb_lambda_partial(): RTKLIB picks the excluded
+        sat by round-robin order across SVs, not by the largest
+        float-integer gap, and runs at most one exclusion per epoch.
+        """
+        # Update lock counters: increment for sats valid this epoch,
+        # reset to 0 for the rest. Mirrors RTKLIB ssat[].lock semantics.
+        valid = set(int(s) for s in sat)
+        for i in range(self.nav.lock.shape[0]):
+            sv = i + 1
+            for f in range(self.nav.nf):
+                if sv in valid and self.nav.vsat[i, f] != 0:
+                    self.nav.lock[i, f] += 1
+                else:
+                    self.nav.lock[i, f] = 0
+
+        nb, xa = self.resamb_lambda(sat, 1, self.nav.par_P0)
+        ratio = (0.0 if self._last_s0 <= 0.0
+                 else self._last_s1 / self._last_s0)
+        if nb > 0:
+            self.nav.prev_ratio1 = ratio
+            self.nav.prev_ratio2 = ratio
+            self.nav.excsat = 0
+            return nb, xa
+        self.nav.prev_ratio1 = ratio
+
+        if len(sat) < self.nav.minfixsats:
+            return 0, xa
+
+        # Round-robin: resume from the sat after nav.excsat.
+        sat_arr = [int(s) for s in sat]
+        try:
+            start = sat_arr.index(self.nav.excsat) + 1
+        except ValueError:
+            start = 0
+        order = sat_arr[start:] + sat_arr[:start]
+
+        exc = 0
+        # arfilter: if a newly-locked sat (lock==1, i.e. first epoch the
+        # counter was incremented) just dragged the ratio below threshold,
+        # prefer dropping it.
+        if self.nav.arfilter and ratio < self.nav.thresar \
+                and self.nav.prev_ratio2 > 0.0 \
+                and ratio < 1.1 * self.nav.prev_ratio2:
+            for s_ in order:
+                if any(0 < self.nav.lock[s_-1, f] <= 1
+                       for f in range(self.nav.nf)):
+                    exc = s_
+                    break
+        if exc == 0:
+            for s_ in order:
+                if any(self.nav.vsat[s_-1, f] != 0
+                       for f in range(self.nav.nf)):
+                    exc = s_
+                    break
+        if exc == 0:
+            return 0, xa
+
+        # Exclude by zeroing vsat for one epoch; ddidx() then skips it.
+        vsat_row = self.nav.vsat[exc-1, :].copy()
+        self.nav.vsat[exc-1, :] = 0
+        try:
+            sat2 = [s for s in sat if int(s) != exc]
+            nb, xa = self.resamb_lambda(sat2, 1, self.nav.par_P0)
+        finally:
+            self.nav.vsat[exc-1, :] = vsat_row
+
+        if nb > 0:
+            self.nav.prev_ratio2 = (
+                0.0 if self._last_s0 <= 0.0
+                else self._last_s1 / self._last_s0)
+            self.nav.excsat = exc
+            return nb, xa
+
+        self.nav.excsat = 0
+        return 0, xa
 
     def holdamb_flags(self):
         """Mark resolved ambiguities as held (nav.fix[i, f]: 2 → 3) without
@@ -1938,10 +2047,16 @@ class pppos():
                 code = int(qc_codes[f])
                 if code == 0:
                     continue
-                self.nav.edt[i, f] = 1
+                # LLI=1 is a cycle-slip notification, not a bad observation:
+                # flag the sat for ambiguity reset in udstate but keep the
+                # measurement (RTKLIB-style behavior). Other codes drop it.
+                if code == 1:
+                    self.nav.slip[i, f] = 1
+                else:
+                    self.nav.edt[i, f] = 1
                 if self.nav.monlevel > 0:
                     if code == 1:
-                        msg = "edit {:4s} - LLI".format(sigsCP[f].str())
+                        msg = "slip {:4s} - LLI".format(sigsCP[f].str())
                     elif code == 2:
                         msg = "edit {:4s} - invalid PR obs".format(
                             sigsPR[f].str())
@@ -1984,10 +2099,12 @@ class pppos():
                 if gf1 != 0.0:
                     self.nav.gf[sat_i] = gf1
                 if slip:
-                    self.nav.edt[i, 0:2] = 1
+                    # GF slip is a cycle-slip event: flag for ambiguity
+                    # reset, do not drop the observation.
+                    self.nav.slip[i, 0:2] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
-                            " {}  {} - edit {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
+                            " {}  {} - slip {:4s} - GF gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
                             .format(time2str(obs.t),
                                     sat2id(sat_i),
                                     sig1.str(), gf_prev, gf1,
@@ -2135,7 +2252,11 @@ class pppos():
         self.nav.smode = 5  # 4: fixed ambiguities, 5: float ambiguities
 
         if self.nav.armode > 0:
-            nb, xa = self.resamb_lambda(sat, self.nav.parmode, self.nav.par_P0)
+            if getattr(self.nav, 'rtklib_mode', False):
+                nb, xa = self.resamb_lambda_rtklib(sat)
+            else:
+                nb, xa = self.resamb_lambda(
+                    sat, self.nav.parmode, self.nav.par_P0)
             if nb > 0:
                 # Use position with fixed ambiguities xa
                 yu, eu, elu = self.zdres(obs, cs, bsx, rs, vs, dts, xa[0:3])
