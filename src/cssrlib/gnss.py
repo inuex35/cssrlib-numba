@@ -821,6 +821,10 @@ class Nav():
         self.outc = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
         # Carrier-phase processed indicator
         self.vsat = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
+        # Lock counter (RTKLIB ssat[].lock equivalent): consecutive epochs the
+        # carrier phase has been valid. Resets to 0 on outage; used by
+        # rtklib_mode arfilter to demote newly-acquired satellites.
+        self.lock = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
 
         # geometry-free combination for cycle-slip detection
         self.gf = np.zeros(uGNSS.MAXSAT)
