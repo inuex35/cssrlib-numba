@@ -90,6 +90,64 @@ TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 
 @njit(cache=True)
+def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
+                 na, nf, MAXSAT, GNSSMAX, elmaskar):
+    """Inner loop of ddidx — find ref sat per (system, freq) and the
+    DD pair indices into the ambiguity slot of nav.x.
+
+    Returns (ix, fix). The caller copies fix into nav.fix and uses ix
+    to build the SD→DD transformation. Replaces the Python-set membership
+    check with an O(1) presence array indexed by sat number.
+    """
+    sat_present = np.zeros(MAXSAT + 2, dtype=np.bool_)
+    for s in sat_arr:
+        si = int(s)
+        if 0 < si <= MAXSAT:
+            sat_present[si] = True
+
+    fix = np.zeros((MAXSAT, nf), dtype=np.int64)
+    ix = np.zeros((MAXSAT, 2), dtype=np.int64)
+    nb = 0
+
+    for m in range(GNSSMAX):
+        k = na
+        for f in range(nf):
+            i_ref = -1
+            for i in range(k, k + MAXSAT):
+                sat_i = i - k + 1
+                if sys_lookup[sat_i] != m:
+                    continue
+                if (not sat_present[sat_i]
+                        or nav_x[i] == 0.0
+                        or nav_vsat[sat_i - 1, f] == 0):
+                    continue
+                if nav_el[sat_i - 1] >= elmaskar:
+                    fix[sat_i - 1, f] = 2
+                    i_ref = i
+                    break
+                else:
+                    fix[sat_i - 1, f] = 1
+            if i_ref >= 0:
+                for j in range(k, k + MAXSAT):
+                    sat_j = j - k + 1
+                    if sys_lookup[sat_j] != m:
+                        continue
+                    if (j == i_ref
+                            or not sat_present[sat_j]
+                            or nav_x[j] == 0.0
+                            or nav_vsat[sat_j - 1, f] == 0):
+                        continue
+                    if nav_el[sat_j - 1] >= elmaskar:
+                        ix[nb, 0] = i_ref
+                        ix[nb, 1] = j
+                        nb += 1
+                        fix[sat_j - 1, f] = 2
+            k += MAXSAT
+
+    return ix[:nb].copy(), fix
+
+
+@njit(cache=True)
 def _gather_or_zero(values, indices):
     n = indices.size
     out = np.zeros(n)
@@ -1624,42 +1682,12 @@ class pppos():
 
     def ddidx(self, nav, sat):
         """ index for SD to DD transformation matrix D """
-        nb = 0
-        n = uGNSS.MAXSAT
-        na = nav.na
-        ix = np.zeros((n, 2), dtype=int)
-        nav.fix = np.zeros((n, nav.nf), dtype=int)
-        # O(1) sat membership check + ndarray sat→sys lookup
-        sat_set = set(int(s) for s in sat)
-        sys_lookup = SAT_SYS_ARR
-        for m in range(uGNSS.GNSSMAX):
-            k = na
-            for f in range(nav.nf):
-                for i in range(k, k+n):
-                    sat_i = i-k+1
-                    if sys_lookup[sat_i] != m:
-                        continue
-                    if sat_i not in sat_set or nav.x[i] == 0.0 \
-                       or nav.vsat[sat_i-1, f] == 0:
-                        continue
-                    if nav.el[sat_i-1] >= nav.elmaskar:
-                        nav.fix[sat_i-1, f] = 2
-                        break
-                    else:
-                        nav.fix[sat_i-1, f] = 1
-                for j in range(k, k+n):
-                    sat_j = j-k+1
-                    if sys_lookup[sat_j] != m:
-                        continue
-                    if i == j or sat_j not in sat_set or nav.x[j] == 0.0 \
-                       or nav.vsat[sat_j-1, f] == 0:
-                        continue
-                    if nav.el[sat_j-1] >= nav.elmaskar:
-                        ix[nb, :] = [i, j]
-                        nb += 1
-                        nav.fix[sat_j-1, f] = 2
-                k += n
-        ix = np.resize(ix, (nb, 2))
+        sat_arr = np.ascontiguousarray(sat, dtype=np.int32)
+        ix, fix = _ddidx_core(
+            sat_arr, nav.x, nav.vsat, nav.el, SAT_SYS_ARR,
+            nav.na, nav.nf,
+            int(uGNSS.MAXSAT), int(uGNSS.GNSSMAX), nav.elmaskar)
+        nav.fix = fix
         return ix
 
     def resamb_lambda_partial(self, sat, armode=1, P0=0.995, max_drop=5):
