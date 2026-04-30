@@ -1901,6 +1901,85 @@ class pppos():
         self.nav.excsat = 0
         return 0, xa
 
+    def resamb_lambda_subsets(self, sat):
+        """RTKLIB-faithful AR with system-level preferred subset retries.
+
+        Pass 1: full AR over all systems via ``resamb_lambda_rtklib``
+        (which already handles its own ratio + 1-sat round-robin
+        fallback). If pass 1 produces a strong fix
+        (ratio >= nav.thresar + 0.5), return immediately.
+
+        Pass 2: when pass 1 is marginal or failed, try system-level
+        subsets that exclude one or two constellations entirely. This
+        catches the case where one system is multipath-corrupted and
+        dragging the full-set AR ratio below threshold:
+
+          * GPS + GAL + QZS                (drop GLO + BDS)
+          * GPS + GAL + QZS + BDS          (drop GLO)
+          * GPS + GAL + QZS + GLO          (drop BDS)
+
+        Each subset runs ``resamb_lambda`` once. Among the subsets that
+        produce a fix with ratio >= nav.thresar, adopt the one with the
+        highest ratio (and prefer it over the pass-1 fix when its ratio
+        is strictly higher).
+
+        Inspired by libgnss++ rtk_ar_selection::buildPreferredSubsets
+        (rsasaki0109/gnssplusplus-library).
+        """
+        nb_full, xa_full = self.resamb_lambda_rtklib(sat)
+        s0_full, s1_full = self._last_s0, self._last_s1
+        ratio_full = (0.0 if s0_full <= 0.0 else s1_full / s0_full)
+
+        # Strong full-set fix → no need to search subsets.
+        if nb_full > 0 and ratio_full >= self.nav.thresar + 0.5:
+            return nb_full, xa_full
+
+        best_nb, best_xa, best_ratio = nb_full, xa_full, ratio_full
+
+        # Subsets always keep the GPS + GAL + QZS core (most reliable
+        # in tokyo-class urban multipath).
+        core = {uGNSS.GPS, uGNSS.GAL, uGNSS.QZS}
+        subsets = (
+            core,
+            core | {uGNSS.BDS},
+            core | {uGNSS.GLO},
+        )
+
+        vsat_snapshot = self.nav.vsat.copy()
+        try:
+            for keep_sys in subsets:
+                # Reset vsat each iteration to undo any prior subset's
+                # zeroing.
+                self.nav.vsat[:, :] = vsat_snapshot
+                sub_sat = []
+                for s_int in sat:
+                    sys_id, _ = sat2prn(int(s_int))
+                    if sys_id in keep_sys:
+                        sub_sat.append(int(s_int))
+                    else:
+                        self.nav.vsat[int(s_int) - 1, :] = 0
+                if len(sub_sat) < self.nav.minfixsats:
+                    continue
+                nb_s, xa_s = self.resamb_lambda(sub_sat, 1, self.nav.par_P0)
+                if nb_s <= 0:
+                    continue
+                s0_s, s1_s = self._last_s0, self._last_s1
+                ratio_s = (0.0 if s0_s <= 0.0 else s1_s / s0_s)
+                if ratio_s < self.nav.thresar:
+                    continue
+                if ratio_s > best_ratio:
+                    best_nb, best_xa, best_ratio = nb_s, xa_s, ratio_s
+        finally:
+            self.nav.vsat[:, :] = vsat_snapshot
+
+        # Stash the adopted subset's pseudo-ratio into _last_s0/_last_s1
+        # so downstream callers reading the ratio see the chosen value.
+        if best_nb > 0:
+            self._last_s0 = 1.0
+            self._last_s1 = best_ratio
+        return best_nb, best_xa
+
+
     def holdamb_flags(self):
         """Mark resolved ambiguities as held (nav.fix[i, f]: 2 → 3) without
         running the Kalman update. Use this in pipelines that overwrite
