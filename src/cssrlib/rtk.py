@@ -8,6 +8,7 @@ import numpy as np
 from copy import copy, deepcopy
 from contextlib import contextmanager
 from cssrlib.ephemeris import satposs
+from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST
 
 
 class rtkpos(pppos):
@@ -67,8 +68,7 @@ class rtkpos(pppos):
         np.maximum(nav_rover.slip, nav_base.slip, out=nav_rover.slip)
 
         sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
-        ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
-        iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
+        iu, ir = self._common_indices(obs, obsb, sat_ed)
 
         obs_ = copy(obs)
         obs_.sat = obs.sat[iu]
@@ -105,8 +105,7 @@ class rtkpos(pppos):
 
         # define common satellite between base and rover
         sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
-        ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
-        iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
+        iu, ir = self._common_indices(obs, obsb, sat_ed)
         ns = len(iu)
 
         y = np.zeros((ns*2, self.nav.nf*2))
@@ -129,6 +128,134 @@ class rtkpos(pppos):
         obs_.P = self._build_frequency_diff(rover_P, base_P)
 
         return y, e, iu, obs_
+
+    def _common_indices(self, obs, obsb, sat_ed):
+        ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
+        iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
+        return iu, ir
+
+    @staticmethod
+    def _row_has_nonzero(row):
+        return np.any(row != 0)
+
+    def manage_ambiguities_external(self, obs):
+        """Update ambiguity/reset state without running udstate/kfupdate.
+
+        Intended for external solvers (e.g. GTSAM) that reuse cssrlib's
+        ambiguity bookkeeping but own the state propagation/update step.
+        """
+        ns = len(obs.sat)
+        sat = obs.sat
+        for f in range(self.nav.nf):
+            for i in range(uGNSS.MAXSAT):
+                self.nav.outc[i, f] += 1
+                sat_ = i + 1
+                sys_i, _ = sat2prn(sat_)
+                reset = (
+                    self.nav.outc[i, f] > self.nav.maxout
+                    or self._row_has_nonzero(self.nav.edt[i, :])
+                    or self._row_has_nonzero(self.nav.slip[i, :])
+                )
+                if sys_i not in obs.sig:
+                    continue
+                j = self.IB(sat_, f, self.nav.na)
+                if reset and self.nav.x[j] != 0.0:
+                    self.initx(0.0, 0.0, j)
+                    self.nav.outc[i, f] = 0
+                    self.nav.slip[i, f] = 0
+
+            for i in range(ns):
+                sat_i = sat[i]
+                if self._row_has_nonzero(self.nav.edt[sat_i-1, :]):
+                    continue
+                sys_i, _ = sat2prn(sat_i)
+                if sys_i not in obs.sig:
+                    continue
+                sig = obs.sig[sys_i][uTYP.L][f]
+                fi = (
+                    sig.frequency(self.nav.glo_ch.get(sat_i, 0))
+                    if sys_i == uGNSS.GLO else sig.frequency()
+                )
+                lam = rCST.CLIGHT / fi if fi > 0 else 0.0
+                cp, pr = obs.L[i, f], obs.P[i, f]
+                if cp == 0 or pr == 0 or lam == 0:
+                    continue
+                j = self.IB(sat_i, f, self.nav.na)
+                if self.nav.x[j] == 0.0:
+                    self.initx(cp - pr/lam, self.nav.sig_n0**2, j)
+
+        # Slip flags consumed: clear so the next qcedit starts clean.
+        # Mirrors udstate's slip[:] = 0 at end. Without this, any sat that
+        # ever sees an LLI/GF slip stays flagged forever and triggers an
+        # ambiguity reset every subsequent epoch — wiping the freshly
+        # initialized N before AR can ever ratio-test.
+        self.nav.slip[:] = 0
+
+    def prepare_relative_measurements(
+        self, obs, obsb, pos_pred=None, cs=None, orb=None, bsx=None,
+        rs=None, vs=None, dts=None, svh=None,
+        rsb=None, vsb=None, dtsb=None, svhb=None,
+        dd_only=False, compute_zdres=True,
+    ):
+        """Prepare rover/base relative observations without EKF update.
+
+        Returns a dict with satellite states, common-satellite indices,
+        DD observations, and rover elevations at `pos_pred`.
+        """
+        if len(obs.sat) == 0 or obsb is None or len(obsb.sat) == 0:
+            return None
+
+        if rs is None or vs is None or dts is None or svh is None:
+            rs, vs, dts, svh, nsat = satposs(obs, self.nav, cs=cs, orb=orb)
+        else:
+            nsat = int(np.count_nonzero(~np.isnan(dts)))
+        self.nav.nsat[0] = len(obs.sat)
+        self.nav.nsat[1] = nsat
+        if nsat < 4:
+            return None
+
+        if rsb is None or dtsb is None or svhb is None or (not dd_only and vsb is None):
+            rsb, vsb, dtsb, svhb, _ = satposs(obsb, self.nav)
+
+        if dd_only:
+            iu, obs_sd = self.base_process_dd_only(
+                obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb
+            )
+            y = None
+            e = None
+        else:
+            y, e, iu, obs_sd = self.base_process(
+                obs, obsb, rs, dts, svh,
+                rsb=rsb, vsb=vsb, dtsb=dtsb, svhb=svhb,
+            )
+        ns = len(iu)
+        self.nav.nsat[2] = ns
+        if ns < 4:
+            return None
+
+        sat = obs.sat[iu]
+        ir = np.intersect1d(obsb.sat, sat, True, True)[1]
+
+        if pos_pred is None:
+            pos_pred = self.nav.x[0:3].copy()
+        if compute_zdres:
+            yu, eu, elu = self.zdres(obs, cs, bsx, rs, vs, dts, pos_pred)
+            el = elu[iu]
+        else:
+            yu = None
+            eu = None
+            elu = None
+            el = self.nav.el[sat-1].copy()
+        self.nav.sat = sat
+        self.nav.el[sat-1] = el
+
+        return {
+            'rs': rs, 'vs': vs, 'dts': dts, 'svh': svh,
+            'rsb': rsb, 'vsb': vsb, 'dtsb': dtsb, 'svhb': svhb,
+            'y': y, 'e': e, 'yu': yu, 'eu': eu, 'elu': elu,
+            'iu': iu, 'ir': ir, 'sat': sat, 'el': el,
+            'obs_sd': obs_sd, 'pos_pred': pos_pred,
+        }
 
     @contextmanager
     def _use_nav(self, nav):
@@ -176,15 +303,19 @@ class rtkpos(pppos):
         primary_mask = (rover[:, 0] != 0.0) & (base[:, 0] != 0.0)
         result[primary_mask, 0] = rover[primary_mask, 0] - base[primary_mask, 0]
 
-        if nf <= 1:
+        if nf <= 1 or cols <= 1 or base.shape[1] <= 1:
             return result
 
-        for sat_idx in range(ns):
-            for col in range(1, cols):
-                if col >= base.shape[1]:
-                    break
-                if rover[sat_idx, col] != 0.0 and base[sat_idx, col] != 0.0:
-                    result[sat_idx, 1] = rover[sat_idx, col] - base[sat_idx, col]
-                    break
+        cols_2nd = min(cols, base.shape[1])
+        secondary_mask = (rover[:, 1:cols_2nd] != 0.0) & (base[:, 1:cols_2nd] != 0.0)
+        valid_rows = np.any(secondary_mask, axis=1)
+        if not np.any(valid_rows):
+            return result
+
+        secondary_cols = np.argmax(secondary_mask[valid_rows], axis=1) + 1
+        row_idx = np.nonzero(valid_rows)[0]
+        result[row_idx, 1] = (
+            rover[row_idx, secondary_cols] - base[row_idx, secondary_cols]
+        )
 
         return result

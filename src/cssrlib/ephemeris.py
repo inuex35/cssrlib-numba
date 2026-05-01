@@ -498,6 +498,26 @@ def satposs(obs, nav, cs=None, orb=None):
     svh = np.zeros(n, dtype=int)
     iode = -1
     nsat = 0
+    obs_sig_keys = obs.sig.keys()
+    has_precise_orbit = nav.ephopt == 4
+
+    if cs is not None:
+        cs_lc0 = cs.lc[0]
+        cssr_mode = cs.cssrmode
+        orbit_iod_ok = cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr
+        orbit_pred_ok = cs.iodssr_p >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr_p
+        clock_iod = cs.iodssr_c[sCType.CLOCK]
+        sat_n_set = set(cs.sat_n)
+        sat_n_p_set = set(cs.sat_n_p)
+        iode_map = cs_lc0.iode
+        dorb_map = cs_lc0.dorb
+        dvel_map = getattr(cs_lc0, 'dvel', {})
+        dclk_map = cs_lc0.dclk
+        hclk_map = getattr(cs_lc0, 'hclk', {})
+        ddft_map = getattr(cs_lc0, 'ddft', {})
+        t0_map = cs_lc0.t0
+    else:
+        cs_lc0 = None
 
     for i in range(n):
 
@@ -506,13 +526,13 @@ def satposs(obs, nav, cs=None, orb=None):
 
         # Skip undesired constellations
         #
-        if sys not in obs.sig.keys():
+        if sys not in obs_sig_keys:
             continue
 
         pr = obs.P[i, 0]  # TODO: catch invalid observation!
         t = timeadd(obs.t, -pr/rCST.CLIGHT)
 
-        if nav.ephopt == 4:
+        if has_precise_orbit:
 
             rs_, dts_, _ = orb.peph2pos(t, sat, nav)
             if rs_ is None or dts_ is None or np.isnan(dts_[0]):
@@ -543,66 +563,63 @@ def satposs(obs, nav, cs=None, orb=None):
 
             if cs is not None:
 
-                if cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr:
-                    if sat not in cs.sat_n:
+                if orbit_iod_ok:
+                    if sat not in sat_n_set:
                         continue
-                elif cs.iodssr_p >= 0 and \
-                        cs.iodssr_c[sCType.ORBIT] == cs.iodssr_p:
-                    if sat not in cs.sat_n_p:
+                elif orbit_pred_ok:
+                    if sat not in sat_n_p_set:
                         continue
                 else:
                     continue
 
-                if sat not in cs.lc[0].iode.keys():
+                if sat not in iode_map:
                     continue
 
-                iode = cs.lc[0].iode[sat]
-                dorb = cs.lc[0].dorb[sat]  # radial,along-track,cross-track
+                iode = iode_map[sat]
+                dorb = dorb_map[sat]  # radial,along-track,cross-track
 
-                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                    dorb += cs.lc[0].dvel[sat] * \
-                        (timediff(obs.t, cs.lc[0].t0[sat][sCType.ORBIT]))
+                if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                    dorb += dvel_map[sat] * timediff(obs.t, t0_map[sat][sCType.ORBIT])
 
-                if cs.cssrmode == sc.BDS_PPP:  # consistency check for IOD corr
+                if cssr_mode == sc.BDS_PPP:  # consistency check for IOD corr
 
-                    if cs.lc[0].iodc[sat] == cs.lc[0].iodc_c[sat]:
-                        dclk = cs.lc[0].dclk[sat]
+                    if cs_lc0.iodc[sat] == cs_lc0.iodc_c[sat]:
+                        dclk = dclk_map[sat]
                     else:
-                        if cs.lc[0].iodc[sat] == cs.lc[0].iodc_c_p[sat]:
-                            dclk = cs.lc[0].dclk_p[sat]
+                        if cs_lc0.iodc[sat] == cs_lc0.iodc_c_p[sat]:
+                            dclk = cs_lc0.dclk_p[sat]
                         else:
                             continue
 
                 else:
 
-                    if cs.cssrmode == sc.GAL_HAS_SIS:  # HAS only
+                    if cssr_mode == sc.GAL_HAS_SIS:  # HAS only
                         if cs.mask_id != cs.mask_id_clk:  # mask has changed
-                            if sat not in cs.sat_n_p:
+                            if sat not in sat_n_p_set:
                                 continue
                     else:
-                        if cs.iodssr_c[sCType.CLOCK] == cs.iodssr:
-                            if sat not in cs.sat_n:
+                        if clock_iod == cs.iodssr:
+                            if sat not in sat_n_set:
                                 continue
                         else:
-                            if cs.iodssr_c[sCType.CLOCK] == cs.iodssr_p:
-                                if sat not in cs.sat_n_p:
+                            if clock_iod == cs.iodssr_p:
+                                if sat not in sat_n_p_set:
                                     continue
                             else:
                                 continue
 
-                    if sat in cs.lc[0].dclk:
-                        dclk = cs.lc[0].dclk[sat]
+                    if sat in dclk_map:
+                        dclk = dclk_map[sat]
                     else:
                         continue
 
-                    if cs.lc[0].cstat & (1 << sCType.HCLOCK) and \
-                            sat in cs.lc[0].hclk.keys() and \
-                            not np.isnan(cs.lc[0].hclk[sat]):
-                        dclk += cs.lc[0].hclk[sat]
+                    if cs_lc0.cstat & (1 << sCType.HCLOCK) and \
+                            sat in hclk_map and \
+                            not np.isnan(hclk_map[sat]):
+                        dclk += hclk_map[sat]
 
-                    if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                        dclk += cs.lc[0].ddft[sat] * \
-                            (timediff(obs.t, cs.lc[0].t0[sat][sCType.CLOCK]))
+                    if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                        dclk += ddft_map[sat] * timediff(obs.t, t0_map[sat][sCType.CLOCK])
 
                 if np.isnan(dclk) or np.isnan(dorb@dorb):
                     continue
@@ -636,7 +653,7 @@ def satposs(obs, nav, cs=None, orb=None):
 
         t = timeadd(t, -dt)
 
-        if nav.ephopt == 4:  # precise ephemeris
+        if has_precise_orbit:  # precise ephemeris
 
             rs_, dts_, _ = orb.peph2pos(t, sat, nav)
             rs[i, :] = rs_[0: 3]
@@ -655,7 +672,7 @@ def satposs(obs, nav, cs=None, orb=None):
             #
             if cs is not None:
 
-                if cs.cssrmode == sc.BDS_PPP:
+                if cssr_mode == sc.BDS_PPP:
                     er = vnorm(rs[i, :])
                     rc = np.cross(rs[i, :], vs[i, :])
                     ec = vnorm(rc)
@@ -668,7 +685,7 @@ def satposs(obs, nav, cs=None, orb=None):
                     er = np.cross(ea, ec)
                     A = np.array([er, ea, ec])
 
-                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
                     dorb_e = dorb
                 else:
                     dorb_e = dorb@A
@@ -676,7 +693,7 @@ def satposs(obs, nav, cs=None, orb=None):
                 rs[i, :] -= dorb_e
                 dts[i] += dclk/rCST.CLIGHT
 
-                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5,
+                if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5,
                                    sc.DGPS) and sys == uGNSS.GPS:
                     dts[i] -= eph.tgd
                     # eph_c = findeph(nav.eph, t, sat, mode=1)  # L5 CNAV
@@ -687,8 +704,8 @@ def satposs(obs, nav, cs=None, orb=None):
                 ers = vnorm(rs[i, :]-nav.x[0: 3])
                 dorb_ = -ers@dorb_e
                 sis = dclk-dorb_
-                if cs.lc[0].t0[sat][sCType.ORBIT].time % 30 == 0 and \
-                        timediff(cs.lc[0].t0[sat][sCType.ORBIT], nav.time_p) > 0:
+                if t0_map[sat][sCType.ORBIT].time % 30 == 0 and \
+                        timediff(t0_map[sat][sCType.ORBIT], nav.time_p) > 0:
                     if abs(nav.sis[sat]) > 0:
                         nav.dsis[sat] = sis - nav.sis[sat]
                     nav.sis[sat] = sis
@@ -702,8 +719,8 @@ def satposs(obs, nav, cs=None, orb=None):
             nsat += 1
 
     if cs is not None:
-        if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
-            nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]
+        if sat in t0_map and sCType.ORBIT in t0_map[sat]:
+            nav.time_p = t0_map[sat][sCType.ORBIT]
 
     return rs, vs, dts, svh, nsat
 
