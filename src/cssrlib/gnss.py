@@ -417,6 +417,9 @@ class rSigRnx():
 
     def str(self):
         """ signal code to string conversion """
+        cached = getattr(self, '_str_cache', None)
+        if cached is not None:
+            return cached
 
         s = ''
 
@@ -438,6 +441,7 @@ class rSigRnx():
         else:
             s += '{}'.format(chr(self.sig % 100+ord('A')-1))
 
+        self._str_cache = s
         return s
 
     def band(self):

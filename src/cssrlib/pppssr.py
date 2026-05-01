@@ -234,6 +234,14 @@ def _combine_cssr_bias(global_bias, regional_bias, nf, flip):
 
 
 @njit(cache=True)
+def _row_has_nonzero(row):
+    for i in range(row.size):
+        if row[i] != 0:
+            return True
+    return False
+
+
+@njit(cache=True)
 def _tropmapf_dispatch_ppp(doy, pos, el, model):
     if model == TROPO_MODEL_HOPF:
         mapfh = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 72.0) ** 2))
@@ -288,17 +296,47 @@ def _zdres_signal_cache(obs, nav):
 
     n = len(obs.P)
     nf = nav.nf
+    sys_lookup = SAT_SYS_ARR
     lam_all = np.zeros((n, nf), dtype=np.float64)
     frq_all = np.zeros((n, nf), dtype=np.float64)
     col_idx_all = -np.ones((n, nf), dtype=np.int64)
     L_sel_all = np.zeros((n, nf), dtype=np.float64)
     P_sel_all = np.zeros((n, nf), dtype=np.float64)
     valid = np.zeros(n, dtype=np.bool_)
+    sys_signal_cache = {}
 
     for i in range(n):
         sat = obs.sat[i]
-        sys, _ = sat2prn(sat)
+        sys = sys_lookup[sat]
         sigsCP = obs.sig[sys][uTYP.L]
+
+        cache_key = (int(sys), int(nav.glo_ch.get(int(sat), 0))
+                     if sys == uGNSS.GLO else 0)
+        cached = sys_signal_cache.get(cache_key)
+        if cached is None:
+            if sys == uGNSS.GLO:
+                ch = nav.glo_ch[int(sat)]
+                lam_full = np.asarray(
+                    [sig.wavelength(ch) or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+                frq_full = np.asarray(
+                    [sig.frequency(ch) or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+            else:
+                lam_full = np.asarray(
+                    [sig.wavelength() or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+                frq_full = np.asarray(
+                    [sig.frequency() or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+            cached = (lam_full, frq_full)
+            sys_signal_cache[cache_key] = cached
+        else:
+            lam_full, frq_full = cached
 
         max_cols = obs.L.shape[1] if obs.L.ndim == 2 else 0
         if obs.P.ndim == 2:
@@ -325,24 +363,40 @@ def _zdres_signal_cache(obs, nav):
         L_sel_row = L_sel_all[i, :]
         P_sel_row = P_sel_all[i, :]
 
-        for f_idx in range(count):
-            col = col_idx_row[f_idx]
-            if col < 0:
-                continue
-            if sys == uGNSS.GLO:
-                lam_row[f_idx] = sigsCP[col].wavelength(nav.glo_ch[sat])
-                frq_row[f_idx] = sigsCP[col].frequency(nav.glo_ch[sat])
-            else:
-                lam_row[f_idx] = sigsCP[col].wavelength()
-                frq_row[f_idx] = sigsCP[col].frequency()
-            if col < L_row_arr.size:
-                L_sel_row[f_idx] = L_row_arr[col]
-            if col < P_row_arr.size:
-                P_sel_row[f_idx] = P_row_arr[col]
+        cols_sel = col_idx_row[:count]
+        lam_row[:count] = lam_full[cols_sel]
+        frq_row[:count] = frq_full[cols_sel]
+        L_sel_row[:count] = L_row_arr[cols_sel]
+        P_sel_row[:count] = P_row_arr[cols_sel]
 
         valid[i] = True
 
     return lam_all, frq_all, col_idx_all, L_sel_all, P_sel_all, valid
+
+
+def _qcedit_system_cache(obs, nav):
+    cache = {}
+    nf = nav.nf
+    for sys, sigs_by_type in obs.sig.items():
+        sigs_pr = sigs_by_type[uTYP.C]
+        sigs_cp = sigs_by_type[uTYP.L]
+        sigs_cn = sigs_by_type[uTYP.S]
+        cnr_thresholds = np.asarray(
+            [nav.cnr_min_gpy if sigs_cn[f].isGPS_PY() else nav.cnr_min
+             for f in range(nf)],
+            dtype=np.float64,
+        )
+        gf_pair = None
+        if len(sigs_cp) >= 2:
+            if sys == uGNSS.GLO:
+                gf_pair = "glo"
+            else:
+                gf_pair = (
+                    sigs_cp[0].wavelength() or 0.0,
+                    sigs_cp[1].wavelength() or 0.0,
+                )
+        cache[sys] = (sigs_pr, sigs_cp, sigs_cn, cnr_thresholds, gf_pair)
+    return cache
 
 
 @njit(cache=True)
@@ -2067,13 +2121,14 @@ class pppos():
         # PRNs in the original loop.
         self.nav.edt = np.ones((ns, self.nav.nf), dtype=int)
 
-        # Build O(1) lookups for observed sats.
         obs_sat_arr = np.asarray(obs.sat)
-        sat_to_idx = {int(s): k for k, s in enumerate(obs_sat_arr)}
         sys_lookup = SAT_SYS_ARR
+        system_cache = _qcedit_system_cache(obs, self.nav)
+        sig_table = obs.sig if hasattr(obs, 'sig') else None
 
         sat = []
-        for sat_i in (int(s) for s in obs_sat_arr):
+        for j, sat_raw in enumerate(obs_sat_arr):
+            sat_i = int(sat_raw)
 
             i = sat_i - 1
             sys_i = sys_lookup[sat_i]
@@ -2090,8 +2145,6 @@ class pppos():
                                         .format(time2str(obs.t),
                                                 sat2id(sat_i)))
                 continue
-
-            j = sat_to_idx[sat_i]
 
             # Check for valid orbit and clock offset
             #
@@ -2117,6 +2170,7 @@ class pppos():
             #
             _, e = geodist(rs[j, :], rr_)
             _, el = satazel(pos, e)
+            self.nav.el[sat_i-1] = el
             if el < self.nav.elmin:
                 self.nav.edt[i][:] = 1
                 if self.nav.monlevel > 0:
@@ -2128,15 +2182,7 @@ class pppos():
 
             # Pseudorange, carrier-phase and C/N0 signals
             #
-            sigsPR = obs.sig[sys_i][uTYP.C]
-            sigsCP = obs.sig[sys_i][uTYP.L]
-            sigsCN = obs.sig[sys_i][uTYP.S]
-
-            cnr_thresholds = np.zeros(self.nav.nf, dtype=np.float64)
-            for f in range(self.nav.nf):
-                cnr_thresholds[f] = (self.nav.cnr_min_gpy
-                                     if sigsCN[f].isGPS_PY()
-                                     else self.nav.cnr_min)
+            sigsPR, sigsCP, sigsCN, cnr_thresholds, gf_pair = system_cache[sys_i]
 
             P_row = obs.P[j, :self.nav.nf]
             L_row = obs.L[j, :self.nav.nf]
@@ -2177,23 +2223,21 @@ class pppos():
                         time2str(obs.t), sat2id(sat_i), msg))
 
             # cycle-slip detection by geometry-free combination
-            sig_table = obs.sig if hasattr(obs, 'sig') else None
-            sys, _ = sat2prn(sat_i)
             if (
                 obs.L.shape[1] > 1
                 and sig_table
-                and sys in sig_table
-                and uTYP.L in sig_table[sys]
-                and len(sig_table[sys][uTYP.L]) >= 2
+                and sys_i in sig_table
+                and uTYP.L in sig_table[sys_i]
+                and len(sig_table[sys_i][uTYP.L]) >= 2
             ):
                 L1R, L2R = obs.L[j, 0:2]
-                sig1, sig2 = sig_table[sys][uTYP.L][0:2]
-                if sys == uGNSS.GLO:
-                    lam1 = sig1.wavelength(self.nav.glo_ch[sat_i])
-                    lam2 = sig2.wavelength(self.nav.glo_ch[sat_i])
+                sig1, sig2 = sig_table[sys_i][uTYP.L][0:2]
+                if gf_pair == "glo":
+                    ch = self.nav.glo_ch[sat_i]
+                    lam1 = sig1.wavelength(ch)
+                    lam2 = sig2.wavelength(ch)
                 else:
-                    lam1 = sig1.wavelength()
-                    lam2 = sig2.wavelength()
+                    lam1, lam2 = gf_pair
                 gf_prev = float(self.nav.gf[sat_i])
                 gf1, slip = _gf_slip_check(
                     float(L1R),
