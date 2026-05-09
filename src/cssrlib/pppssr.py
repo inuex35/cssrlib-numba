@@ -90,6 +90,64 @@ TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 
 @njit(cache=True)
+def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
+                 na, nf, MAXSAT, GNSSMAX, elmaskar):
+    """Inner loop of ddidx — find ref sat per (system, freq) and the
+    DD pair indices into the ambiguity slot of nav.x.
+
+    Returns (ix, fix). The caller copies fix into nav.fix and uses ix
+    to build the SD→DD transformation. Replaces the Python-set membership
+    check with an O(1) presence array indexed by sat number.
+    """
+    sat_present = np.zeros(MAXSAT + 2, dtype=np.bool_)
+    for s in sat_arr:
+        si = int(s)
+        if 0 < si <= MAXSAT:
+            sat_present[si] = True
+
+    fix = np.zeros((MAXSAT, nf), dtype=np.int64)
+    ix = np.zeros((MAXSAT, 2), dtype=np.int64)
+    nb = 0
+
+    for m in range(GNSSMAX):
+        k = na
+        for f in range(nf):
+            i_ref = -1
+            for i in range(k, k + MAXSAT):
+                sat_i = i - k + 1
+                if sys_lookup[sat_i] != m:
+                    continue
+                if (not sat_present[sat_i]
+                        or nav_x[i] == 0.0
+                        or nav_vsat[sat_i - 1, f] == 0):
+                    continue
+                if nav_el[sat_i - 1] >= elmaskar:
+                    fix[sat_i - 1, f] = 2
+                    i_ref = i
+                    break
+                else:
+                    fix[sat_i - 1, f] = 1
+            if i_ref >= 0:
+                for j in range(k, k + MAXSAT):
+                    sat_j = j - k + 1
+                    if sys_lookup[sat_j] != m:
+                        continue
+                    if (j == i_ref
+                            or not sat_present[sat_j]
+                            or nav_x[j] == 0.0
+                            or nav_vsat[sat_j - 1, f] == 0):
+                        continue
+                    if nav_el[sat_j - 1] >= elmaskar:
+                        ix[nb, 0] = i_ref
+                        ix[nb, 1] = j
+                        nb += 1
+                        fix[sat_j - 1, f] = 2
+            k += MAXSAT
+
+    return ix[:nb].copy(), fix
+
+
+@njit(cache=True)
 def _gather_or_zero(values, indices):
     n = indices.size
     out = np.zeros(n)
@@ -176,6 +234,14 @@ def _combine_cssr_bias(global_bias, regional_bias, nf, flip):
 
 
 @njit(cache=True)
+def _row_has_nonzero(row):
+    for i in range(row.size):
+        if row[i] != 0:
+            return True
+    return False
+
+
+@njit(cache=True)
 def _tropmapf_dispatch_ppp(doy, pos, el, model):
     if model == TROPO_MODEL_HOPF:
         mapfh = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 72.0) ** 2))
@@ -230,17 +296,47 @@ def _zdres_signal_cache(obs, nav):
 
     n = len(obs.P)
     nf = nav.nf
+    sys_lookup = SAT_SYS_ARR
     lam_all = np.zeros((n, nf), dtype=np.float64)
     frq_all = np.zeros((n, nf), dtype=np.float64)
     col_idx_all = -np.ones((n, nf), dtype=np.int64)
     L_sel_all = np.zeros((n, nf), dtype=np.float64)
     P_sel_all = np.zeros((n, nf), dtype=np.float64)
     valid = np.zeros(n, dtype=np.bool_)
+    sys_signal_cache = {}
 
     for i in range(n):
         sat = obs.sat[i]
-        sys, _ = sat2prn(sat)
+        sys = sys_lookup[sat]
         sigsCP = obs.sig[sys][uTYP.L]
+
+        cache_key = (int(sys), int(nav.glo_ch.get(int(sat), 0))
+                     if sys == uGNSS.GLO else 0)
+        cached = sys_signal_cache.get(cache_key)
+        if cached is None:
+            if sys == uGNSS.GLO:
+                ch = nav.glo_ch[int(sat)]
+                lam_full = np.asarray(
+                    [sig.wavelength(ch) or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+                frq_full = np.asarray(
+                    [sig.frequency(ch) or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+            else:
+                lam_full = np.asarray(
+                    [sig.wavelength() or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+                frq_full = np.asarray(
+                    [sig.frequency() or 0.0 for sig in sigsCP],
+                    dtype=np.float64,
+                )
+            cached = (lam_full, frq_full)
+            sys_signal_cache[cache_key] = cached
+        else:
+            lam_full, frq_full = cached
 
         max_cols = obs.L.shape[1] if obs.L.ndim == 2 else 0
         if obs.P.ndim == 2:
@@ -267,24 +363,40 @@ def _zdres_signal_cache(obs, nav):
         L_sel_row = L_sel_all[i, :]
         P_sel_row = P_sel_all[i, :]
 
-        for f_idx in range(count):
-            col = col_idx_row[f_idx]
-            if col < 0:
-                continue
-            if sys == uGNSS.GLO:
-                lam_row[f_idx] = sigsCP[col].wavelength(nav.glo_ch[sat])
-                frq_row[f_idx] = sigsCP[col].frequency(nav.glo_ch[sat])
-            else:
-                lam_row[f_idx] = sigsCP[col].wavelength()
-                frq_row[f_idx] = sigsCP[col].frequency()
-            if col < L_row_arr.size:
-                L_sel_row[f_idx] = L_row_arr[col]
-            if col < P_row_arr.size:
-                P_sel_row[f_idx] = P_row_arr[col]
+        cols_sel = col_idx_row[:count]
+        lam_row[:count] = lam_full[cols_sel]
+        frq_row[:count] = frq_full[cols_sel]
+        L_sel_row[:count] = L_row_arr[cols_sel]
+        P_sel_row[:count] = P_row_arr[cols_sel]
 
         valid[i] = True
 
     return lam_all, frq_all, col_idx_all, L_sel_all, P_sel_all, valid
+
+
+def _qcedit_system_cache(obs, nav):
+    cache = {}
+    nf = nav.nf
+    for sys, sigs_by_type in obs.sig.items():
+        sigs_pr = sigs_by_type[uTYP.C]
+        sigs_cp = sigs_by_type[uTYP.L]
+        sigs_cn = sigs_by_type[uTYP.S]
+        cnr_thresholds = np.asarray(
+            [nav.cnr_min_gpy if sigs_cn[f].isGPS_PY() else nav.cnr_min
+             for f in range(nf)],
+            dtype=np.float64,
+        )
+        gf_pair = None
+        if len(sigs_cp) >= 2:
+            if sys == uGNSS.GLO:
+                gf_pair = "glo"
+            else:
+                gf_pair = (
+                    sigs_cp[0].wavelength() or 0.0,
+                    sigs_cp[1].wavelength() or 0.0,
+                )
+        cache[sys] = (sigs_pr, sigs_cp, sigs_cn, cnr_thresholds, gf_pair)
+    return cache
 
 
 @njit(cache=True)
@@ -1624,42 +1736,12 @@ class pppos():
 
     def ddidx(self, nav, sat):
         """ index for SD to DD transformation matrix D """
-        nb = 0
-        n = uGNSS.MAXSAT
-        na = nav.na
-        ix = np.zeros((n, 2), dtype=int)
-        nav.fix = np.zeros((n, nav.nf), dtype=int)
-        # O(1) sat membership check + ndarray sat→sys lookup
-        sat_set = set(int(s) for s in sat)
-        sys_lookup = SAT_SYS_ARR
-        for m in range(uGNSS.GNSSMAX):
-            k = na
-            for f in range(nav.nf):
-                for i in range(k, k+n):
-                    sat_i = i-k+1
-                    if sys_lookup[sat_i] != m:
-                        continue
-                    if sat_i not in sat_set or nav.x[i] == 0.0 \
-                       or nav.vsat[sat_i-1, f] == 0:
-                        continue
-                    if nav.el[sat_i-1] >= nav.elmaskar:
-                        nav.fix[sat_i-1, f] = 2
-                        break
-                    else:
-                        nav.fix[sat_i-1, f] = 1
-                for j in range(k, k+n):
-                    sat_j = j-k+1
-                    if sys_lookup[sat_j] != m:
-                        continue
-                    if i == j or sat_j not in sat_set or nav.x[j] == 0.0 \
-                       or nav.vsat[sat_j-1, f] == 0:
-                        continue
-                    if nav.el[sat_j-1] >= nav.elmaskar:
-                        ix[nb, :] = [i, j]
-                        nb += 1
-                        nav.fix[sat_j-1, f] = 2
-                k += n
-        ix = np.resize(ix, (nb, 2))
+        sat_arr = np.ascontiguousarray(sat, dtype=np.int32)
+        ix, fix = _ddidx_core(
+            sat_arr, nav.x, nav.vsat, nav.el, SAT_SYS_ARR,
+            nav.na, nav.nf,
+            int(uGNSS.MAXSAT), int(uGNSS.GNSSMAX), nav.elmaskar)
+        nav.fix = fix
         return ix
 
     def resamb_lambda_partial(self, sat, armode=1, P0=0.995, max_drop=5):
@@ -1873,6 +1955,85 @@ class pppos():
         self.nav.excsat = 0
         return 0, xa
 
+    def resamb_lambda_subsets(self, sat):
+        """RTKLIB-faithful AR with system-level preferred subset retries.
+
+        Pass 1: full AR over all systems via ``resamb_lambda_rtklib``
+        (which already handles its own ratio + 1-sat round-robin
+        fallback). If pass 1 produces a strong fix
+        (ratio >= nav.thresar + 0.5), return immediately.
+
+        Pass 2: when pass 1 is marginal or failed, try system-level
+        subsets that exclude one or two constellations entirely. This
+        catches the case where one system is multipath-corrupted and
+        dragging the full-set AR ratio below threshold:
+
+          * GPS + GAL + QZS                (drop GLO + BDS)
+          * GPS + GAL + QZS + BDS          (drop GLO)
+          * GPS + GAL + QZS + GLO          (drop BDS)
+
+        Each subset runs ``resamb_lambda`` once. Among the subsets that
+        produce a fix with ratio >= nav.thresar, adopt the one with the
+        highest ratio (and prefer it over the pass-1 fix when its ratio
+        is strictly higher).
+
+        Inspired by libgnss++ rtk_ar_selection::buildPreferredSubsets
+        (rsasaki0109/gnssplusplus-library).
+        """
+        nb_full, xa_full = self.resamb_lambda_rtklib(sat)
+        s0_full, s1_full = self._last_s0, self._last_s1
+        ratio_full = (0.0 if s0_full <= 0.0 else s1_full / s0_full)
+
+        # Strong full-set fix → no need to search subsets.
+        if nb_full > 0 and ratio_full >= self.nav.thresar + 0.5:
+            return nb_full, xa_full
+
+        best_nb, best_xa, best_ratio = nb_full, xa_full, ratio_full
+
+        # Subsets always keep the GPS + GAL + QZS core (most reliable
+        # in tokyo-class urban multipath).
+        core = {uGNSS.GPS, uGNSS.GAL, uGNSS.QZS}
+        subsets = (
+            core,
+            core | {uGNSS.BDS},
+            core | {uGNSS.GLO},
+        )
+
+        vsat_snapshot = self.nav.vsat.copy()
+        try:
+            for keep_sys in subsets:
+                # Reset vsat each iteration to undo any prior subset's
+                # zeroing.
+                self.nav.vsat[:, :] = vsat_snapshot
+                sub_sat = []
+                for s_int in sat:
+                    sys_id, _ = sat2prn(int(s_int))
+                    if sys_id in keep_sys:
+                        sub_sat.append(int(s_int))
+                    else:
+                        self.nav.vsat[int(s_int) - 1, :] = 0
+                if len(sub_sat) < self.nav.minfixsats:
+                    continue
+                nb_s, xa_s = self.resamb_lambda(sub_sat, 1, self.nav.par_P0)
+                if nb_s <= 0:
+                    continue
+                s0_s, s1_s = self._last_s0, self._last_s1
+                ratio_s = (0.0 if s0_s <= 0.0 else s1_s / s0_s)
+                if ratio_s < self.nav.thresar:
+                    continue
+                if ratio_s > best_ratio:
+                    best_nb, best_xa, best_ratio = nb_s, xa_s, ratio_s
+        finally:
+            self.nav.vsat[:, :] = vsat_snapshot
+
+        # Stash the adopted subset's pseudo-ratio into _last_s0/_last_s1
+        # so downstream callers reading the ratio see the chosen value.
+        if best_nb > 0:
+            self._last_s0 = 1.0
+            self._last_s1 = best_ratio
+        return best_nb, best_xa
+
+
     def holdamb_flags(self):
         """Mark resolved ambiguities as held (nav.fix[i, f]: 2 → 3) without
         running the Kalman update. Use this in pipelines that overwrite
@@ -1960,13 +2121,14 @@ class pppos():
         # PRNs in the original loop.
         self.nav.edt = np.ones((ns, self.nav.nf), dtype=int)
 
-        # Build O(1) lookups for observed sats.
         obs_sat_arr = np.asarray(obs.sat)
-        sat_to_idx = {int(s): k for k, s in enumerate(obs_sat_arr)}
         sys_lookup = SAT_SYS_ARR
+        system_cache = _qcedit_system_cache(obs, self.nav)
+        sig_table = obs.sig if hasattr(obs, 'sig') else None
 
         sat = []
-        for sat_i in (int(s) for s in obs_sat_arr):
+        for j, sat_raw in enumerate(obs_sat_arr):
+            sat_i = int(sat_raw)
 
             i = sat_i - 1
             sys_i = sys_lookup[sat_i]
@@ -1983,8 +2145,6 @@ class pppos():
                                         .format(time2str(obs.t),
                                                 sat2id(sat_i)))
                 continue
-
-            j = sat_to_idx[sat_i]
 
             # Check for valid orbit and clock offset
             #
@@ -2010,6 +2170,7 @@ class pppos():
             #
             _, e = geodist(rs[j, :], rr_)
             _, el = satazel(pos, e)
+            self.nav.el[sat_i-1] = el
             if el < self.nav.elmin:
                 self.nav.edt[i][:] = 1
                 if self.nav.monlevel > 0:
@@ -2021,15 +2182,7 @@ class pppos():
 
             # Pseudorange, carrier-phase and C/N0 signals
             #
-            sigsPR = obs.sig[sys_i][uTYP.C]
-            sigsCP = obs.sig[sys_i][uTYP.L]
-            sigsCN = obs.sig[sys_i][uTYP.S]
-
-            cnr_thresholds = np.zeros(self.nav.nf, dtype=np.float64)
-            for f in range(self.nav.nf):
-                cnr_thresholds[f] = (self.nav.cnr_min_gpy
-                                     if sigsCN[f].isGPS_PY()
-                                     else self.nav.cnr_min)
+            sigsPR, sigsCP, sigsCN, cnr_thresholds, gf_pair = system_cache[sys_i]
 
             P_row = obs.P[j, :self.nav.nf]
             L_row = obs.L[j, :self.nav.nf]
@@ -2070,23 +2223,21 @@ class pppos():
                         time2str(obs.t), sat2id(sat_i), msg))
 
             # cycle-slip detection by geometry-free combination
-            sig_table = obs.sig if hasattr(obs, 'sig') else None
-            sys, _ = sat2prn(sat_i)
             if (
                 obs.L.shape[1] > 1
                 and sig_table
-                and sys in sig_table
-                and uTYP.L in sig_table[sys]
-                and len(sig_table[sys][uTYP.L]) >= 2
+                and sys_i in sig_table
+                and uTYP.L in sig_table[sys_i]
+                and len(sig_table[sys_i][uTYP.L]) >= 2
             ):
                 L1R, L2R = obs.L[j, 0:2]
-                sig1, sig2 = sig_table[sys][uTYP.L][0:2]
-                if sys == uGNSS.GLO:
-                    lam1 = sig1.wavelength(self.nav.glo_ch[sat_i])
-                    lam2 = sig2.wavelength(self.nav.glo_ch[sat_i])
+                sig1, sig2 = sig_table[sys_i][uTYP.L][0:2]
+                if gf_pair == "glo":
+                    ch = self.nav.glo_ch[sat_i]
+                    lam1 = sig1.wavelength(ch)
+                    lam2 = sig2.wavelength(ch)
                 else:
-                    lam1 = sig1.wavelength()
-                    lam2 = sig2.wavelength()
+                    lam1, lam2 = gf_pair
                 gf_prev = float(self.nav.gf[sat_i])
                 gf1, slip = _gf_slip_check(
                     float(L1R),
