@@ -191,7 +191,7 @@ class rtkpos(pppos):
         # initialized N before AR can ever ratio-test.
         self.nav.slip[:] = 0
 
-    def prepare_relative_measurements(
+    def prepare_double_difference_measurements(
         self, obs, obsb, pos_pred=None, cs=None, orb=None, bsx=None,
         rs=None, vs=None, dts=None, svh=None,
         rsb=None, vsb=None, dtsb=None, svhb=None,
