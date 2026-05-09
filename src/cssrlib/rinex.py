@@ -40,6 +40,7 @@ class rnxdec:
         self.sig_map = {}
         # signal selection for internal data structure
         self.sig_tab = {}
+        self.sig_index = {}
         self.nsig = {uTYP.C: 0, uTYP.L: 0, uTYP.D: 0, uTYP.S: 0}
 
         self.pos = np.array([0, 0, 0])
@@ -76,6 +77,16 @@ class rnxdec:
         for _, sigs in self.sig_tab.items():
             for typ, sig in sigs.items():
                 self.nsig[typ] = max((self.nsig[typ], len(sig)))
+
+        self._rebuild_signal_index()
+
+    def _rebuild_signal_index(self):
+        self.sig_index = {}
+        for sys, sigs_by_type in self.sig_tab.items():
+            sys_idx = {}
+            for typ, sigs in sigs_by_type.items():
+                sys_idx[typ] = {sig.str(): idx for idx, sig in enumerate(sigs)}
+            self.sig_index[sys] = sys_idx
 
     def getSignals(self, sys, typ):
         """ retrieve signal list for constellation and obs type """
@@ -122,6 +133,7 @@ class rnxdec:
                     for a in atts:
                         if sig.toAtt(a) in self.sig_map[sys].values():
                             self.sig_tab[sys][typ][i] = sig.toAtt(a)
+        self._rebuild_signal_index()
 
     def flt(self, u, c=-1):
         """ convert string to float """
@@ -887,12 +899,12 @@ class rnxdec:
 
             # Initialize data structures
             #
-            obs.P = np.empty((0, self.nsig[uTYP.C]), dtype=np.float64)
-            obs.L = np.empty((0, self.nsig[uTYP.L]), dtype=np.float64)
-            obs.D = np.empty((0, self.nsig[uTYP.D]), dtype=np.float64)
-            obs.S = np.empty((0, self.nsig[uTYP.S]), dtype=np.float64)
-            obs.lli = np.empty((0, self.nsig[uTYP.L]), dtype=np.int32)
-            obs.sat = np.empty(0, dtype=np.int32)
+            pr_rows = []
+            cp_rows = []
+            dp_rows = []
+            cn_rows = []
+            lli_rows = []
+            sats = []
             obs.sig = self.sig_tab
 
             for _ in range(nsat):
@@ -909,6 +921,8 @@ class rnxdec:
                 #
                 if sys not in self.sig_tab:
                     continue
+
+                sig_index = self.sig_index.get(sys, {})
 
                 # Convert to satellite ID
                 #
@@ -945,7 +959,7 @@ class rnxdec:
 
                     # Signal index in data structure
                     #
-                    j = self.sig_tab[sys][sig.typ].index(sig)
+                    j = sig_index[sig.typ][sig.str()]
 
                     if sig.typ == uTYP.C:
                         pr[j] = val
@@ -961,18 +975,30 @@ class rnxdec:
 
                 # Store prn and data
                 #
-                obs.P = np.append(obs.P, pr)
-                obs.L = np.append(obs.L, cp)
-                obs.D = np.append(obs.D, dp)
-                obs.S = np.append(obs.S, cn)
-                obs.lli = np.append(obs.lli, ll)
-                obs.sat = np.append(obs.sat, sat)
+                pr_rows.append(pr)
+                cp_rows.append(cp)
+                dp_rows.append(dp)
+                cn_rows.append(cn)
+                lli_rows.append(ll)
+                sats.append(sat)
 
-            obs.P = obs.P.reshape(len(obs.sat), self.nsig[uTYP.C])
-            obs.L = obs.L.reshape(len(obs.sat), self.nsig[uTYP.L])
-            obs.D = obs.D.reshape(len(obs.sat), self.nsig[uTYP.D])
-            obs.S = obs.S.reshape(len(obs.sat), self.nsig[uTYP.S])
-            obs.lli = obs.lli.reshape(len(obs.sat), self.nsig[uTYP.L])
+            nobs = len(sats)
+            obs.P = np.asarray(pr_rows, dtype=np.float64).reshape(
+                nobs, self.nsig[uTYP.C]
+            )
+            obs.L = np.asarray(cp_rows, dtype=np.float64).reshape(
+                nobs, self.nsig[uTYP.L]
+            )
+            obs.D = np.asarray(dp_rows, dtype=np.float64).reshape(
+                nobs, self.nsig[uTYP.D]
+            )
+            obs.S = np.asarray(cn_rows, dtype=np.float64).reshape(
+                nobs, self.nsig[uTYP.S]
+            )
+            obs.lli = np.asarray(lli_rows, dtype=np.int32).reshape(
+                nobs, self.nsig[uTYP.L]
+            )
+            obs.sat = np.asarray(sats, dtype=np.int32)
 
             break
 
