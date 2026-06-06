@@ -48,23 +48,69 @@ def _findeph_index(nav):
     return idx
 
 
+_FINDEPH_TOE_CACHE = {}
+
+
+def _findeph_toe(nav):
+    """{(sat, mode): (toe_seconds_sorted: ndarray, ephs_list, navidx_list)} cached by id(nav).
+
+    toe_seconds_sorted  -- float64 array of toe values, sorted ascending
+    ephs_list           -- list of eph objects aligned with toe_seconds_sorted
+    navidx_list         -- list of nav insertion indices aligned with toe_seconds_sorted
+
+    nav_index = position in the original nav list (enumerate order), used to
+    reproduce the original linear scan's last-wins-on-ties semantics.
+    """
+    key = id(nav)
+    n = len(nav)
+    cached = _FINDEPH_TOE_CACHE.get(key)
+    if cached is not None and cached[1] == n:
+        return cached[0]
+    table = {}
+    for nav_idx, eph_ in enumerate(nav):
+        table.setdefault((eph_.sat, eph_.mode), []).append(
+            (eph_.toe.time + eph_.toe.sec, nav_idx, eph_)
+        )
+    out = {}
+    for k, lst in table.items():
+        lst.sort(key=lambda x: x[0])  # sort by toe_seconds ascending
+        toes = np.array([x[0] for x in lst], dtype=np.float64)
+        ephs = [x[2] for x in lst]
+        navidx = [x[1] for x in lst]
+        out[k] = (toes, ephs, navidx)
+    _FINDEPH_TOE_CACHE[key] = (out, n)
+    if len(_FINDEPH_TOE_CACHE) > 32:
+        _FINDEPH_TOE_CACHE.pop(next(iter(_FINDEPH_TOE_CACHE)))
+    return out
+
+
 def findeph(nav, t, sat, iode=-1, mode=0):
     """ find ephemeris for sat """
     sys, _ = sat2prn(sat)
-    eph = None
     tmax = MAXDTOE_t[sys]
-    tmin = tmax + 1.0
-
+    if iode < 0:
+        tbl = _findeph_toe(nav).get((sat, mode))
+        if tbl is None:
+            return None
+        toes, ephs, navidx = tbl
+        tt = t.time + t.sec
+        lo = int(np.searchsorted(toes, tt - tmax, side='left'))
+        hi = int(np.searchsorted(toes, tt + tmax, side='right'))
+        best = None; best_dt = None; best_nav = -1
+        for k in range(lo, hi):
+            dt = abs(tt - toes[k])
+            if best_dt is None or dt < best_dt or (dt == best_dt and navidx[k] > best_nav):
+                best = ephs[k]; best_dt = dt; best_nav = navidx[k]
+        return best
+    # iode >= 0: original linear scan (unchanged)
     idx = _findeph_index(nav)
     candidates = idx.get(sat, ())
-
-    # Pull t.time / t.sec out of the loop so we can inline timediff into
-    # a single subtraction per candidate (findeph runs millions of times
-    # in a typical session and timediff dominated its profile).
+    eph = None
     t_time = t.time
     t_sec = t.sec
+    tmin = tmax + 1.0
     for eph_ in candidates:
-        if iode >= 0 and iode != eph_.iode:
+        if iode != eph_.iode:
             continue
         if eph_.mode != mode:
             continue
@@ -74,12 +120,7 @@ def findeph(nav, t, sat, iode=-1, mode=0):
             dt = -dt
         if dt > tmax:
             continue
-        if iode >= 0:
-            return eph_
-        if dt <= tmin:
-            eph = eph_
-            tmin = dt
-
+        return eph_
     return eph
 
 
@@ -97,7 +138,7 @@ deq = glonass_deq
 glorbit = glonass_glorbit
 
 
-def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=1.0):
+def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=30.0):
     """ calculate GLONASS satellite position based on ephemeris """
     dt = timediff(time, geph.toe)
     pos, vel, dts = glonass_propagate(
