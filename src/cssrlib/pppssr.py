@@ -799,7 +799,7 @@ class pppos():
                     continue
                 # LLI=1 is a cycle-slip notification, not a bad observation:
                 # flag the sat for ambiguity reset (consumed by
-                # manage_ambiguities_external) but keep the measurement
+                # update_ambiguities) but keep the measurement
                 # (RTKLIB-style behavior). Other codes drop it.
                 if code == 1:
                     self.nav.slip[i, f] = 1
