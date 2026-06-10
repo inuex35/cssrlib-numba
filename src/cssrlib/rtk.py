@@ -8,7 +8,7 @@ import numpy as np
 from copy import copy, deepcopy
 from contextlib import contextmanager
 from cssrlib.ephemeris import satposs
-from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST
+from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST, uTideModel
 
 
 class DDMeasurements(dict):
@@ -89,6 +89,13 @@ class rtkpos(pppos):
         self.nav.thresar = 2.0  # AR acceptance threshold
         self.nav.armode = 1     # AR is enabled
         self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
+
+        # Solid Earth tides cancel in the rover-base double difference at the
+        # short baselines RTK targets, so they are disabled by default. This
+        # also keeps the RTK path free of the cssrlib.ppp / cssrlib.peph
+        # modules. Re-enable via nav.tidecorr for long baselines if needed.
+        self.nav.tidecorr = uTideModel.NONE
+        self.base_nav.tidecorr = uTideModel.NONE
 
     def base_process_dd_only(self, obs, obsb, rs, dts, svh,
                              rsb=None, dtsb=None, svhb=None):

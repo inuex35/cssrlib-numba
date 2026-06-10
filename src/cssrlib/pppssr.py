@@ -8,14 +8,15 @@ from numba import njit
 from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST, SAT_SYS_ARR
 from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, time2str, timediff
-from cssrlib.gnss import gpst2utc, uIonoModel, time2doy
-from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
-from cssrlib.ppp import shapiro, windupcorr
-from cssrlib.peph import antModelRx, antModelTx
-from cssrlib.cssrlib import sCType
-from cssrlib.cssrlib import sCSSRTYPE as sc
+from cssrlib.gnss import gpst2utc, uIonoModel, time2doy, uTideModel
 from cssrlib.mlambda import mlambda
 from cssrlib.atmosphere import tropmapf_niell
+# NOTE: cssrlib.ppp (Earth tides, phase wind-up), cssrlib.peph (antenna
+# models) and cssrlib.cssrlib (SSR/CSSR enums) are imported lazily inside the
+# methods that use them (zdres, qcedit tide branch, antModel*_fast,
+# _sig0_table). This keeps the broadcast-ephemeris RTK path -- which never
+# touches SSR corrections, receiver-antenna PCV or tides -- free of those
+# heavier modules. See _sig0_table() and the lazy imports below.
 from cssrlib.constants import CLIGHT, GME
 from cssrlib.geometry import geodist, satazel
 
@@ -29,61 +30,77 @@ fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
 
 MIN_SIN_EL = 0.1 * rCST.D2R
 
-_SIG0_TABLE = {
-    sc.QZS_MADOCA: {
-        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-        uGNSS.GLO: (rSigRnx("RC1C"), rSigRnx("RC2C")),
-        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-        uGNSS.QZS: (rSigRnx("JC1C"), rSigRnx("JC2S")),
-    },
-    sc.GAL_HAS_SIS: {
-        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC7Q")),
-    },
-    sc.GAL_HAS_IDD: {
-        uGNSS.GPS: (rSigRnx("GC1C"),),
-        uGNSS.GLO: (rSigRnx("RC1C"),),
-        uGNSS.GAL: (rSigRnx("EC1C"),),
-        uGNSS.BDS: (rSigRnx("CC2I"),),
-        uGNSS.QZS: (rSigRnx("JC1C"),),
-    },
-    sc.IGS_SSR: {
-        uGNSS.GPS: (rSigRnx("GC1C"),),
-        uGNSS.GLO: (rSigRnx("RC1C"),),
-        uGNSS.GAL: (rSigRnx("EC1C"),),
-        uGNSS.BDS: (rSigRnx("CC2I"),),
-        uGNSS.QZS: (rSigRnx("JC1C"),),
-    },
-    sc.RTCM3_SSR: {
-        uGNSS.GPS: (rSigRnx("GC1C"),),
-        uGNSS.GLO: (rSigRnx("RC1C"),),
-        uGNSS.GAL: (rSigRnx("EC1C"),),
-        uGNSS.BDS: (rSigRnx("CC2I"),),
-        uGNSS.QZS: (rSigRnx("JC1C"),),
-    },
-    sc.BDS_PPP: {
-        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-        uGNSS.BDS: (rSigRnx("CC6I"),),
-    },
-    sc.QZS_CLAS: {
-        uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-    },
-    sc.PVS_PPP: {
-        uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
-        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-        uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
-    },
-    sc.SBAS_L1: {
-        uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
-        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-        uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
-    },
-    sc.SBAS_L5: {
-        uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
-        uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-        uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
-    },
-}
+_SIG0_TABLE_CACHE = None
+
+
+def _sig0_table():
+    """SSR reference-signal table keyed by SSR mode.
+
+    Built lazily on first use (zdres with SSR corrections) so that the
+    broadcast-ephemeris RTK path does not import cssrlib.cssrlib just to
+    define this module-level constant.
+    """
+    global _SIG0_TABLE_CACHE
+    if _SIG0_TABLE_CACHE is not None:
+        return _SIG0_TABLE_CACHE
+    from cssrlib.cssrlib import sCSSRTYPE as sc
+    _SIG0_TABLE_CACHE = {
+        sc.QZS_MADOCA: {
+            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+            uGNSS.GLO: (rSigRnx("RC1C"), rSigRnx("RC2C")),
+            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+            uGNSS.QZS: (rSigRnx("JC1C"), rSigRnx("JC2S")),
+        },
+        sc.GAL_HAS_SIS: {
+            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC7Q")),
+        },
+        sc.GAL_HAS_IDD: {
+            uGNSS.GPS: (rSigRnx("GC1C"),),
+            uGNSS.GLO: (rSigRnx("RC1C"),),
+            uGNSS.GAL: (rSigRnx("EC1C"),),
+            uGNSS.BDS: (rSigRnx("CC2I"),),
+            uGNSS.QZS: (rSigRnx("JC1C"),),
+        },
+        sc.IGS_SSR: {
+            uGNSS.GPS: (rSigRnx("GC1C"),),
+            uGNSS.GLO: (rSigRnx("RC1C"),),
+            uGNSS.GAL: (rSigRnx("EC1C"),),
+            uGNSS.BDS: (rSigRnx("CC2I"),),
+            uGNSS.QZS: (rSigRnx("JC1C"),),
+        },
+        sc.RTCM3_SSR: {
+            uGNSS.GPS: (rSigRnx("GC1C"),),
+            uGNSS.GLO: (rSigRnx("RC1C"),),
+            uGNSS.GAL: (rSigRnx("EC1C"),),
+            uGNSS.BDS: (rSigRnx("CC2I"),),
+            uGNSS.QZS: (rSigRnx("JC1C"),),
+        },
+        sc.BDS_PPP: {
+            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+            uGNSS.BDS: (rSigRnx("CC6I"),),
+        },
+        sc.QZS_CLAS: {
+            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
+        },
+        sc.PVS_PPP: {
+            uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
+            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+            uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
+        },
+        sc.SBAS_L1: {
+            uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
+            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+            uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
+        },
+        sc.SBAS_L5: {
+            uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
+            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
+            uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
+        },
+    }
+    return _SIG0_TABLE_CACHE
+
 
 TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
 TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
@@ -686,6 +703,7 @@ def _zdres_core(
 def antModelRx_fast(nav, pos, e_vec, sigs, rtype):
     """Return contiguous receiver antenna corrections with NaNs zeroed."""
 
+    from cssrlib.peph import antModelRx
     vals = antModelRx(nav, pos, e_vec, sigs, rtype)
     if vals is None:
         return np.zeros(len(sigs), dtype=np.float64)
@@ -696,6 +714,7 @@ def antModelRx_fast(nav, pos, e_vec, sigs, rtype):
 def antModelTx_fast(nav, e_vec, sigs, sat, time, rs, sig0=None):
     """Return contiguous satellite antenna corrections with NaNs zeroed."""
 
+    from cssrlib.peph import antModelTx
     vals = antModelTx(nav, e_vec, sigs, sat, time, rs, sig0)
     if vals is None:
         return np.zeros(len(sigs), dtype=np.float64)
@@ -1132,6 +1151,7 @@ class pppos():
 
     def find_bias(self, cs, sigref, sat, inet=0):
         """ find satellite signal bias from correction """
+        from cssrlib.cssrlib import sCSSRTYPE as sc
         nf = len(sigref)
         v = np.zeros(nf)
 
@@ -1167,6 +1187,12 @@ class pppos():
     def zdres(self, obs, cs, bsx, rs, vs, dts, rr, rtype=1):
         """ non-differential residual """
 
+        # SSR enums are only needed when SSR corrections are supplied; import
+        # them lazily so the broadcast-ephemeris path stays free of
+        # cssrlib.cssrlib.
+        if cs is not None:
+            from cssrlib.cssrlib import sCType, sCSSRTYPE as sc
+
         _c = rCST.CLIGHT
         ns2m = _c*1e-9
 
@@ -1180,9 +1206,11 @@ class pppos():
         # Solid Earth tide corrections
         #
         if self.nav.tidecorr == uTideModel.SIMPLE:
+            from cssrlib.ppp import tidedisp
             pos = ecef2pos(rr_)
             disp = tidedisp(gpst2utc(obs.t), pos)
         elif self.nav.tidecorr == uTideModel.IERS2010:
+            from cssrlib.ppp import tidedispIERS2010
             pos = ecef2pos(rr_)
             disp = tidedispIERS2010(gpst2utc(obs.t), pos)
         else:
@@ -1368,6 +1396,7 @@ class pppos():
             # Phase wind-up effect
             #
             if self.nav.phw_opt > 0:
+                from cssrlib.ppp import windupcorr
                 phw_mode = (False if self.nav.phw_opt == 2 else True)
                 self.nav.phw[sat-1] = windupcorr(obs.t, rs[i, :], vs[i, :],
                                                  rr_, self.nav.phw[sat-1],
@@ -1381,8 +1410,10 @@ class pppos():
             # Select APC reference signals
             #
             sig0 = None
-            if cs is not None and cs.cssrmode in _SIG0_TABLE:
-                sig0 = _SIG0_TABLE[cs.cssrmode].get(sys, None)
+            if cs is not None:
+                sig0_table = _sig0_table()
+                if cs.cssrmode in sig0_table:
+                    sig0 = sig0_table[cs.cssrmode].get(sys, None)
 
             # Receiver/satellite antenna offset
             #
@@ -2116,9 +2147,11 @@ class pppos():
         # Solid Earth tide corrections
         #
         if self.nav.tidecorr == uTideModel.SIMPLE:
+            from cssrlib.ppp import tidedisp
             pos = ecef2pos(rr_)
             disp = tidedisp(gpst2utc(obs.t), pos)
         elif self.nav.tidecorr == uTideModel.IERS2010:
+            from cssrlib.ppp import tidedispIERS2010
             pos = ecef2pos(rr_)
             disp = tidedispIERS2010(gpst2utc(obs.t), pos)
         else:
