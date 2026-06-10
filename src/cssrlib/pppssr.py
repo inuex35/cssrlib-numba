@@ -167,6 +167,16 @@ def _range_corrections(trop, iono, antr_pr, antr_cp, ants_pr, ants_cp,
     return prc, cpc
 
 
+def _sig_label(sigs, f):
+    """Signal id for band ``f``, or a generic fallback if out of range.
+
+    A constellation may expose fewer bands than ``nav.nf``, leaving the
+    per-system signal lists shorter than the frequency loop; this keeps the
+    log message safe instead of raising IndexError.
+    """
+    return sigs[f].str() if f < len(sigs) else "f{:d}".format(f)
+
+
 @njit(cache=True)
 def _qc_signal_checks(P_row, L_row, S_row, lli_row, cnr_thresholds):
     nf = P_row.size
@@ -381,8 +391,15 @@ def _qcedit_system_cache(obs, nav):
         sigs_pr = sigs_by_type[uTYP.C]
         sigs_cp = sigs_by_type[uTYP.L]
         sigs_cn = sigs_by_type[uTYP.S]
+        # A constellation may carry fewer bands than nav.nf (e.g. a
+        # single-frequency system in a dual-frequency setup). Index sigs_cn
+        # defensively so such a system does not raise IndexError here; the
+        # absent bands have no observation and get edited out per-satellite
+        # in qcedit (invalid PR), while the present bands are still used.
         cnr_thresholds = np.asarray(
-            [nav.cnr_min_gpy if sigs_cn[f].isGPS_PY() else nav.cnr_min
+            [(nav.cnr_min_gpy
+              if (f < len(sigs_cn) and sigs_cn[f].isGPS_PY())
+              else nav.cnr_min)
              for f in range(nf)],
             dtype=np.float64,
         )
@@ -2208,17 +2225,19 @@ class pppos():
                 else:
                     self.nav.edt[i, f] = 1
                 if self.nav.monlevel > 0:
+                    # Label lists may be shorter than nav.nf for a system
+                    # with fewer bands; fall back to a generic band name.
                     if code == 1:
-                        msg = "slip {:4s} - LLI".format(sigsCP[f].str())
+                        msg = "slip {:4s} - LLI".format(_sig_label(sigsCP, f))
                     elif code == 2:
                         msg = "edit {:4s} - invalid PR obs".format(
-                            sigsPR[f].str())
+                            _sig_label(sigsPR, f))
                     elif code == 3:
                         msg = "edit {:4s} - invalid CP obs".format(
-                            sigsCP[f].str())
+                            _sig_label(sigsCP, f))
                     else:
                         msg = "edit {:4s} - low C/N0 {:4.1f} dB-Hz".format(
-                            sigsCN[f].str(), obs.S[j, f])
+                            _sig_label(sigsCN, f), obs.S[j, f])
                     self.nav.fout.write("{}  {} - {}\n".format(
                         time2str(obs.t), sat2id(sat_i), msg))
 

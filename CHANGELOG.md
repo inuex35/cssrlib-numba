@@ -3,6 +3,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [Unreleased]
+
+### Changed
+
+- `rtkpos.prepare_double_difference_measurements` now returns a
+  `DDMeasurements` object: a `dict` subclass (fully backward compatible)
+  that also supports attribute access (`dd.rs` as well as `dd['rs']`) and
+  documents its fields, for consumption by external estimators such as
+  GTSAM factor graphs.
+
+### Fixed
+
+- `mlambda` (LAMBDA AR) now raises `LambdaError` (a `numpy.linalg.LinAlgError`
+  subclass) instead of `SystemExit` when the covariance is not positive
+  definite, so callers embedding AR in their own solver can catch it with a
+  normal `except`.
+- `qcedit` no longer raises `IndexError` when a constellation provides fewer
+  signal bands than `nav.nf` (e.g. a single-frequency system in a
+  dual-frequency setup); the absent bands are edited out per satellite while
+  the present bands are still used.
+
 # [1.2.1] 2025-11-03
 
 
