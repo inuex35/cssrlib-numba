@@ -133,56 +133,12 @@ class rtkpos(pppos):
 
     def base_process(self, obs, obsb, rs, dts, svh,
                      rsb=None, vsb=None, dtsb=None, svhb=None):
-        """ processing for base station in RTK.
-
-        Pre-computed base satellite states (rsb/vsb/dtsb/svhb) may be passed
-        to avoid recomputing satposs when the caller has them already.
-        """
-        nav_rover = self.nav
-        nav_base = self.base_nav
-
-        if rsb is None or vsb is None or dtsb is None or svhb is None:
-            rsb, vsb, dtsb, svhb, _ = satposs(obsb, nav_base)
-        with self._use_nav(nav_base):
-            yr, er, elr = self.zdres(
-                obsb, None, None, rsb, vsb, dtsb, nav_base.rb, 0)
-
-        # Editing observations (base/rover)
-        with self._use_nav(nav_base):
-            sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb, rr=nav_base.rb)
-        with self._use_nav(nav_rover):
-            sat_ed_u = self.qcedit(obs, rs, dts, svh)
-
-        # Propagate base-side cycle-slip flags into the rover so udstate's
-        # ambiguity reset triggers on either-side slips. Without this a
-        # base-only LLI/GF slip would silently corrupt the DD ambiguity.
-        np.maximum(nav_rover.slip, nav_base.slip, out=nav_rover.slip)
-
-        # define common satellite between base and rover
-        sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
-        iu, ir = self._common_indices(obs, obsb, sat_ed)
-        ns = len(iu)
-
-        y = np.zeros((ns*2, self.nav.nf*2))
-        e = np.zeros((ns*2, 3))
-
-        y[ns:, :] = yr[ir, :]
-        e[ns:, :] = er[ir, :]
-
-        # Shallow copy is safe: callers only read obs_.sat / obs_.L / obs_.P
-        # / obs_.sig / obs_.t — none of which are mutated downstream.
-        obs_ = copy(obs)
-        obs_.sat = obs.sat[iu]
-
-        rover_L = obs.L[iu, :]
-        base_L = obsb.L[ir, :]
-        obs_.L = self._build_frequency_diff(rover_L, base_L)
-
-        rover_P = obs.P[iu, :]
-        base_P = obsb.P[ir, :]
-        obs_.P = self._build_frequency_diff(rover_P, base_P)
-
-        return y, e, iu, obs_
+        """Deprecated alias kept for compatibility: forwards to the DD-only
+        path. The undifferenced (zdres-based) variant was removed with the
+        minimal core; ``y``/``e`` are returned as ``None``."""
+        iu, obs_ = self.base_process_dd_only(
+            obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb)
+        return None, None, iu, obs_
 
     def _common_indices(self, obs, obsb, sat_ed):
         ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
@@ -250,33 +206,27 @@ class rtkpos(pppos):
         self, obs, obsb, pos_pred=None, cs=None, orb=None, bsx=None,
         rs=None, vs=None, dts=None, svh=None,
         rsb=None, vsb=None, dtsb=None, svhb=None,
-        dd_only=False, compute_zdres=True,
+        dd_only=True, compute_zdres=False,
     ):
-        """Prepare rover/base relative observations without EKF update.
+        """Prepare rover/base double-difference observations (no EKF).
 
         Computes the building blocks an external estimator (e.g. a GTSAM
-        factor graph) needs to form double-difference RTK factors, without
-        running cssrlib's own Kalman time/measurement update.
+        factor graph) needs to form double-difference RTK factors. The
+        minimal core always runs the DD-only path; ``cs``/``orb``/``bsx`` and
+        the ``dd_only``/``compute_zdres`` flags are accepted for backward
+        compatibility but ignored (SSR, precise orbit and the undifferenced
+        zdres path were removed). Rover elevations come from ``qcedit``
+        (``nav.el``), and ``y``/``e``/``yu``/``eu``/``elu`` are ``None``.
 
         Parameters
         ----------
         obs, obsb : Obs
             Rover and base observations for the epoch.
         pos_pred : array-like of shape (3,), optional
-            Receiver ECEF position used to linearise the geometry. Defaults
-            to the current rover state ``nav.x[0:3]``.
-        cs, orb, bsx : optional
-            SSR corrections / precise orbit / bias objects, forwarded to
-            ``satposs`` / ``zdres`` when used.
+            Receiver ECEF position. Defaults to ``nav.x[0:3]``.
         rs, vs, dts, svh / rsb, vsb, dtsb, svhb : np.ndarray, optional
             Pre-computed rover / base satellite states; pass them to skip the
             ``satposs`` call when the caller already has them.
-        dd_only : bool, default False
-            Skip the base-side ``zdres`` (use when only DD observations are
-            needed downstream).
-        compute_zdres : bool, default True
-            Compute rover zero-difference residuals at ``pos_pred``. When
-            False, ``el`` is taken from ``nav.el`` and ``yu/eu/elu`` are None.
 
         Returns
         -------
@@ -290,7 +240,7 @@ class rtkpos(pppos):
             return None
 
         if rs is None or vs is None or dts is None or svh is None:
-            rs, vs, dts, svh, nsat = satposs(obs, self.nav, cs=cs, orb=orb)
+            rs, vs, dts, svh, nsat = satposs(obs, self.nav)
         else:
             nsat = int(np.count_nonzero(~np.isnan(dts)))
         self.nav.nsat[0] = len(obs.sat)
@@ -298,20 +248,12 @@ class rtkpos(pppos):
         if nsat < 4:
             return None
 
-        if rsb is None or dtsb is None or svhb is None or (not dd_only and vsb is None):
+        if rsb is None or dtsb is None or svhb is None:
             rsb, vsb, dtsb, svhb, _ = satposs(obsb, self.nav)
 
-        if dd_only:
-            iu, obs_sd = self.base_process_dd_only(
-                obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb
-            )
-            y = None
-            e = None
-        else:
-            y, e, iu, obs_sd = self.base_process(
-                obs, obsb, rs, dts, svh,
-                rsb=rsb, vsb=vsb, dtsb=dtsb, svhb=svhb,
-            )
+        iu, obs_sd = self.base_process_dd_only(
+            obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb
+        )
         ns = len(iu)
         self.nav.nsat[2] = ns
         if ns < 4:
@@ -322,21 +264,15 @@ class rtkpos(pppos):
 
         if pos_pred is None:
             pos_pred = self.nav.x[0:3].copy()
-        if compute_zdres:
-            yu, eu, elu = self.zdres(obs, cs, bsx, rs, vs, dts, pos_pred)
-            el = elu[iu]
-        else:
-            yu = None
-            eu = None
-            elu = None
-            el = self.nav.el[sat-1].copy()
+        # Elevations come from qcedit (no zdres in the minimal DD-only core).
+        el = self.nav.el[sat-1].copy()
         self.nav.sat = sat
         self.nav.el[sat-1] = el
 
         return DDMeasurements({
             'rs': rs, 'vs': vs, 'dts': dts, 'svh': svh,
             'rsb': rsb, 'vsb': vsb, 'dtsb': dtsb, 'svhb': svhb,
-            'y': y, 'e': e, 'yu': yu, 'eu': eu, 'elu': elu,
+            'y': None, 'e': None, 'yu': None, 'eu': None, 'elu': None,
             'iu': iu, 'ir': ir, 'sat': sat, 'el': el,
             'obs_sd': obs_sd, 'pos_pred': pos_pred,
         })

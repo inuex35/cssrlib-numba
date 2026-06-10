@@ -153,7 +153,7 @@ def main():
 
         rr_est = isam.calculateEstimate().atPoint3(X)
         dd = rtk.prepare_double_difference_measurements(
-            obs, obsb, pos_pred=rr_est, dd_only=True, compute_zdres=True)
+            obs, obsb, pos_pred=rr_est)
         if dd is None:
             continue
 
