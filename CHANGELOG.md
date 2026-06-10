@@ -5,6 +5,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `rinex.auto_detect_signals(sig_map_rov, sig_map_base=None, max_freq=2, ...)`
+  builds per-system signal lists straight from the RINEX header(s), so the
+  caller no longer hand-crafts them. With a base sig_map it returns matching
+  rover/base lists covering the same (sys, typ, band). Also exposed as the
+  convenience method `rnxdec.autoSignals(decb=None, max_freq=2)` which detects
+  and applies the signals in one call.
+
 ### Removed
 
 - Reduced `rtkpos`/`pppos` to a double-difference-only core for external
