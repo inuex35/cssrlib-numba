@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Removed
 
+- Reduced `rtkpos`/`pppos` to a double-difference-only core for external
+  estimators. Removed the built-in EKF and undifferenced machinery —
+  `process`, `base_process`, `zdres`, `sdres`, `udstate`, `kfupdate`,
+  `valpos`, `holdamb`/`holdamb_flags`, and their helpers — keeping only what
+  the GTSAM DD workflow uses: `prepare_double_difference_measurements`
+  (now always DD-only), `base_process_dd_only`, `qcedit`,
+  `manage_ambiguities_external`, `resamb_lambda` (+ `ddidx`/`restamb`) and
+  `satposs`. `pppssr.py` shrank from ~2300 to ~870 lines. The state vector
+  and its covariance are now owned by the external estimator. Recover the
+  EKF path from the `dev` branch if needed.
+
+
 - Stripped the library down to a minimal broadcast-ephemeris RTK + LAMBDA
   core (11 modules, down from 31). Deleted everything not used by that
   workflow: SSR/CSSR decoders and base (`cssr_bds/has/mdc/pvs`, `cssrlib`,
