@@ -441,14 +441,10 @@ def windupcorr(time, rs, vs, rr, phw, full=False):
     )
 
 
-class uTideModel(IntEnum):
-    """
-    Enumeration for Earth tide model selection
-    """
-
-    NONE = -1
-    SIMPLE = 0
-    IERS2010 = 1
+# uTideModel now lives in cssrlib.gnss (grouped with uTropoModel/uIonoModel)
+# so it can be referenced without importing this heavier module. Re-exported
+# here for backward compatibility.
+from cssrlib.gnss import uTideModel  # noqa: E402,F401
 
 
 def tide_pl(eu, rp, GMp, pos):

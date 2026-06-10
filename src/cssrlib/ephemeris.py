@@ -2,8 +2,6 @@
 module for ephemeris processing
 """
 
-from cssrlib.cssrlib import sCType
-from cssrlib.cssrlib import sCSSRTYPE as sc
 import numpy as np
 from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
@@ -351,6 +349,11 @@ def satpos(sat, t, nav, cs=None, orb=None):
 
         if cs is not None:
 
+            # Lazy import: SSR enums are only needed when SSR corrections are
+            # supplied. Keeps the broadcast-ephemeris path free of the
+            # cssrlib.cssrlib (CSSR) module.
+            from cssrlib.cssrlib import sCType, sCSSRTYPE as sc
+
             if cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr:
                 if sat not in cs.sat_n:
                     return rs, vs, dts, svh
@@ -543,6 +546,9 @@ def satposs(obs, nav, cs=None, orb=None):
     has_precise_orbit = nav.ephopt == 4
 
     if cs is not None:
+        # Lazy import (see satpos): broadcast-ephemeris path stays free of
+        # the cssrlib.cssrlib (CSSR) module.
+        from cssrlib.cssrlib import sCType, sCSSRTYPE as sc
         cs_lc0 = cs.lc[0]
         cssr_mode = cs.cssrmode
         orbit_iod_ok = cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr

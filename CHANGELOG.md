@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 
+- Minimised the broadcast-ephemeris RTK dependency surface. The SSR/CSSR
+  enums (`cssrlib.cssrlib`), antenna models (`cssrlib.peph`) and Earth
+  tides / phase wind-up (`cssrlib.ppp`) are now imported lazily, only when
+  SSR corrections, receiver-antenna PCV or tides are actually used. As a
+  result `import cssrlib.rtk` loads 10 light modules instead of 14, and the
+  double-difference RTK workflow (`prepare_double_difference_measurements`
+  with `dd_only=True, compute_zdres=False` + `manage_ambiguities_external`)
+  runs without loading any of those heavier modules — ideal for embedding in
+  an external estimator such as a GTSAM factor graph.
+- `uTideModel` moved from `cssrlib.ppp` to `cssrlib.gnss` (grouped with
+  `uTropoModel` / `uIonoModel`); re-exported from `cssrlib.ppp` for
+  backward compatibility.
+- `rtkpos` now disables solid-Earth-tide correction by default
+  (`nav.tidecorr = uTideModel.NONE`): tides cancel in the rover-base double
+  difference at RTK baselines. Re-enable via `nav.tidecorr` for long
+  baselines.
 - `rtkpos.prepare_double_difference_measurements` now returns a
   `DDMeasurements` object: a `dict` subclass (fully backward compatible)
   that also supports attribute access (`dd.rs` as well as `dd['rs']`) and

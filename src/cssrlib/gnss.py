@@ -239,6 +239,16 @@ class uIonoModel(IntEnum):
     SBAS = 3
 
 
+class uTideModel(IntEnum):
+    """
+    Enumeration for Earth tide model selection
+    """
+
+    NONE = -1
+    SIMPLE = 0
+    IERS2010 = 1
+
+
 class rSigRnx():
     # Class-level memoization for frequency()/wavelength(): keyed by
     # (sys, sig, k) since frequency depends only on those values, not on
