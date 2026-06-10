@@ -80,8 +80,39 @@ def test_dd_measurements_dual_access():
         raise AssertionError("unknown field should raise AttributeError")
 
 
+def test_auto_detect_signals():
+    """auto_detect_signals builds matching rover/base lists from headers."""
+    import os
+    import cssrlib.rinex as rn
+    from cssrlib.rinex import auto_detect_signals
+
+    data = os.path.join(os.path.dirname(__file__), "..", "data") + os.sep
+    dec = rn.rnxdec()
+    dec.decode_obsh(data + "SEPT078M1.21O")
+    decb = rn.rnxdec()
+    decb.decode_obsh(data + "3034078M1.21O")
+
+    sigs, sigsb = auto_detect_signals(dec.sig_map, decb.sig_map, max_freq=2)
+    assert len(sigs) > 0 and len(sigs) == len(sigsb)
+    # Every band carries pseudorange + carrier + SNR (C, L, S).
+    assert len(sigs) % 3 == 0
+    types = {s.typ for s in sigs}
+    assert {uTYP.C, uTYP.L, uTYP.S} <= types
+
+    # Single-receiver form: no base -> empty second list.
+    only, none = auto_detect_signals(dec.sig_map, max_freq=2)
+    assert len(only) > 0 and none == []
+
+    # rnxdec.autoSignals one-liner applies them to both decoders.
+    d2 = rn.rnxdec(); d2.decode_obsh(data + "SEPT078M1.21O")
+    db2 = rn.rnxdec(); db2.decode_obsh(data + "3034078M1.21O")
+    s2, sb2 = d2.autoSignals(db2, max_freq=2)
+    assert s2 == sigs and d2.sig_tab and db2.sig_tab
+
+
 if __name__ == "__main__":
     test_mlambda_raises_catchable_exception()
     test_qcedit_cache_handles_short_band_system()
     test_dd_measurements_dual_access()
+    test_auto_detect_signals()
     print("OK")
