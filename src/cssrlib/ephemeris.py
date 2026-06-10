@@ -3,7 +3,7 @@ module for ephemeris processing
 """
 
 import numpy as np
-from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
+from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
     time2gpst, timeget, time2gst, time2bdt, gst2time, bdt2time, epoch2time
 from cssrlib.glonass import (
@@ -269,270 +269,28 @@ def eph2rel(time, eph):
     return -2.0*np.sqrt(mu*eph.A)*eph.e*sE/rCST.CLIGHT**2
 
 
-def satpos(sat, t, nav, cs=None, orb=None):
-    """
-    Calculate pos/vel/clk for single satellite
-
-    The satellite position, velocity and clock offset are computed at epoch.
-    The satellite health indicator is extracted from the broadcast navigation
-    message.
-
-    Parameters
-    ----------
-    sat :
-        satellite ID
-    t   : time_t()
-        epoch
-    nav : Nav()
-        contains coarse satellite orbit and clock offset information
-    cs  : cssr_has()
-        contains precise SSR corrections for satellite orbit and clock offset
-    obs : peph()
-        contains precise satellite orbit and clock offset information
-
-    Returns
-    -------
-    rs  : np.array() of float
-        satellite position in ECEF [m]
-    vs  : np.array() of float
-        satellite velocity in ECEF [m/s]
-    dts : np.array() of float
-        satellite clock offset [s]
-    svh : np.array() of int
-        satellite health code [-]
-    """
-
-    n = 1
-    rs = np.ones((n, 3))*np.nan
-    vs = np.ones((n, 3))*np.nan
-    dts = np.ones(n)*np.nan
-    svh = np.zeros(n, dtype=int)
-    iode = -1
-
-    i = 0
-    sys, _ = sat2prn(sat)
-
-    if nav.ephopt == 4:
-
-        rs_, dts_, _ = orb.peph2pos(t, sat, nav)
-        if rs_ is None or dts_ is None or np.isnan(dts_[0]):
-            return rs, vs, dts, svh
-
-        # Health indicator from BRDC
-        #
-        if sys == uGNSS.GLO and len(nav.geph) > 0:
-
-            geph = findeph(nav.geph, t, sat)
-            if geph is None:
-                svh[i] = 1
-                return rs, vs, dts, svh
-
-            svh[i] = geph.svh
-
-            if sat not in nav.glo_ch:
-                nav.glo_ch[sat] = geph.frq
-
-        elif len(nav.eph) > 0:
-
-            eph = findeph(nav.eph, t, sat)
-            if eph is None:
-                svh[i] = 1
-                return rs, vs, dts, svh
-
-            svh[i] = eph.svh
-
-        else:
-
-            svh[i] = 0
-
-    else:
-
-        if cs is not None:
-
-            # Lazy import: SSR enums are only needed when SSR corrections are
-            # supplied. Keeps the broadcast-ephemeris path free of the
-            # cssrlib.cssrlib (CSSR) module.
-            from cssrlib.cssrlib import sCType, sCSSRTYPE as sc
-
-            if cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr:
-                if sat not in cs.sat_n:
-                    return rs, vs, dts, svh
-            elif cs.iodssr_p >= 0 and \
-                    cs.iodssr_c[sCType.ORBIT] == cs.iodssr_p:
-                if sat not in cs.sat_n_p:
-                    return rs, vs, dts, svh
-            else:
-                return rs, vs, dts, svh
-
-            if sat not in cs.lc[0].iode.keys():
-                return rs, vs, dts, svh
-
-            iode = cs.lc[0].iode[sat]
-            dorb = cs.lc[0].dorb[sat]  # radial,along-track,cross-track
-
-            if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-
-                dorb += cs.lc[0].dvel[sat] * \
-                    (timediff(t, cs.lc[0].t0[sat][sCType.ORBIT]))
-
-            if cs.cssrmode == sc.BDS_PPP:  # consistency check for IOD corr
-
-                if cs.lc[0].iodc[sat] == cs.lc[0].iodc_c[sat]:
-                    dclk = cs.lc[0].dclk[sat]
-                elif cs.lc[0].iodc[sat] == cs.lc[0].iodc_c_p[sat]:
-                    dclk = cs.lc[0].dclk_p[sat]
-                else:
-                    return rs, vs, dts, svh
-
-            else:
-
-                if cs.cssrmode == sc.GAL_HAS_SIS:  # HAS only
-                    if cs.mask_id != cs.mask_id_clk:  # mask has changed
-                        if sat not in cs.sat_n_p:
-                            return rs, vs, dts, svh
-                else:
-                    if cs.iodssr_c[sCType.CLOCK] == cs.iodssr:
-                        if sat not in cs.sat_n:
-                            return rs, vs, dts, svh
-
-                    elif cs.iodssr_c[sCType.CLOCK] == cs.iodssr_p:
-                        if sat not in cs.sat_n_p:
-                            return rs, vs, dts, svh
-                    else:
-                        return rs, vs, dts, svh
-
-                dclk = cs.lc[0].dclk[sat]
-
-                if cs.lc[0].cstat & (1 << sCType.HCLOCK) and \
-                        sat in cs.lc[0].hclk.keys() and \
-                        not np.isnan(cs.lc[0].hclk[sat]):
-                    dclk += cs.lc[0].hclk[sat]
-
-                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                    dclk += cs.lc[0].ddft[sat] * \
-                        (timediff(t, cs.lc[0].t0[sat][sCType.CLOCK]))
-
-            if np.isnan(dclk) or np.isnan(dorb@dorb):
-                return rs, vs, dts, svh
-
-            # Select broadcast navigation type depending on GNSS type
-            #
-            mode = cs.nav_mode[sys]
-
-        else:
-
-            mode = 0
-
-        if sys == uGNSS.GLO:
-
-            geph = findeph(nav.geph, t, sat, iode, mode=mode)
-            if geph is None:
-                svh[i] = 1
-                return rs, vs, dts, svh
-
-            svh[i] = geph.svh
-
-            if sat not in nav.glo_ch:
-                nav.glo_ch[sat] = geph.frq
-
-        else:
-
-            eph = findeph(nav.eph, t, sat, iode, mode=mode)
-            if eph is None:
-                svh[i] = 1
-                return rs, vs, dts, svh
-
-            svh[i] = eph.svh
-
-    if nav.ephopt == 4:  # precise ephemeris
-
-        rs_, dts_, _ = orb.peph2pos(t, sat, nav)
-        rs[i, :] = rs_[0: 3]
-        vs[i, :] = rs_[3: 6]
-        dts[i] = dts_[0] - orb.pephrel(rs_)  # Remove relativistic correction!
-
-    else:
-
-        if sys == uGNSS.GLO:
-            rs[i, :], vs[i, :], dts[i] = geph2pos(t, geph, True)
-            dts[i] -= geph2rel(rs[i, :], vs[i, :])
-        else:
-            rs[i, :], vs[i, :], dts[i] = eph2pos(t, eph, True)
-            dts[i] -= eph2rel(t, eph)
-
-        # Apply SSR correction
-        #
-        if cs is not None:
-
-            if cs.cssrmode == sc.BDS_PPP:
-                er = vnorm(rs[i, :])
-                rc = np.cross(rs[i, :], vs[i, :])
-                ec = vnorm(rc)
-                ea = np.cross(ec, er)
-                A = np.array([er, ea, ec])
-            else:
-                ea = vnorm(vs[i, :])
-                rc = np.cross(rs[i, :], vs[i, :])
-                ec = vnorm(rc)
-                er = np.cross(ea, ec)
-                A = np.array([er, ea, ec])
-
-            if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                dorb_e = dorb
-            else:
-                dorb_e = dorb@A
-
-            rs[i, :] -= dorb_e
-            dts[i] += dclk/rCST.CLIGHT
-
-            if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5,
-                               sc.DGPS) and sys == uGNSS.GPS:
-                dts[i] -= eph.tgd
-
-        elif nav.smode == 1 and nav.nf == 1:  # standalone positioning
-            dts[i] -= eph.tgd
-
-    if cs is not None:
-        if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
-            nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]
-
-    return rs, vs, dts, svh
-
-
 def satposs(obs, nav, cs=None, orb=None):
     """
-    Calculate pos/vel/clk for observed satellites
+    Calculate pos/vel/clk for observed satellites (broadcast ephemeris).
 
-    The satellite position, velocity and clock offset are computed at
-    transmission epoch. The signal time-of-flight is computed from
-    a pseudorange measurement corrected by the satellite clock offset,
-    hence the observations are required at this stage. The satellite clock
-    is already corrected for the relativistic effects. The satellite health
-    indicator is extracted from the broadcast navigation message.
+    Positions, velocities and clock offsets are computed at the signal
+    transmission epoch (time-of-flight from the pseudorange). The clock is
+    corrected for relativity and, for single-frequency standalone use, TGD.
 
-    Parameters
-    ----------
-    obs : Obs()
-        contains GNSS measurements
-    nav : Nav()
-        contains coarse satellite orbit and clock offset information
-    cs  : cssr() or derivatives
-        contains SSR corrections for satellite orbit and clock offset
-    obs : peph()
-        contains precise satellite orbit and clock offset information
+    NOTE: SSR-correction (``cs``) and precise-orbit (``orb``) support was
+    removed with the minimal core; both arguments are accepted for
+    signature compatibility but ignored.
 
     Returns
     -------
-    rs  : np.array() of float
-        satellite position in ECEF [m]
-    vs  : np.array() of float
-        satellite velocities in ECEF [m/s]
-    dts : np.array() of float
-        satellite clock offsets [s]
-    svh : np.array() of int
-        satellite health code [-]
+    rs, vs : np.ndarray
+        satellite ECEF position [m] / velocity [m/s]
+    dts : np.ndarray
+        satellite clock offset [s]
+    svh : np.ndarray of int
+        satellite health code
     nsat : int
-        number of effective satellite
+        number of valid satellites
     """
 
     n = obs.sat.shape[0]
@@ -540,31 +298,8 @@ def satposs(obs, nav, cs=None, orb=None):
     vs = np.zeros((n, 3))
     dts = np.zeros(n)
     svh = np.zeros(n, dtype=int)
-    iode = -1
     nsat = 0
     obs_sig_keys = obs.sig.keys()
-    has_precise_orbit = nav.ephopt == 4
-
-    if cs is not None:
-        # Lazy import (see satpos): broadcast-ephemeris path stays free of
-        # the cssrlib.cssrlib (CSSR) module.
-        from cssrlib.cssrlib import sCType, sCSSRTYPE as sc
-        cs_lc0 = cs.lc[0]
-        cssr_mode = cs.cssrmode
-        orbit_iod_ok = cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr
-        orbit_pred_ok = cs.iodssr_p >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr_p
-        clock_iod = cs.iodssr_c[sCType.CLOCK]
-        sat_n_set = set(cs.sat_n)
-        sat_n_p_set = set(cs.sat_n_p)
-        iode_map = cs_lc0.iode
-        dorb_map = cs_lc0.dorb
-        dvel_map = getattr(cs_lc0, 'dvel', {})
-        dclk_map = cs_lc0.dclk
-        hclk_map = getattr(cs_lc0, 'hclk', {})
-        ddft_map = getattr(cs_lc0, 'ddft', {})
-        t0_map = cs_lc0.t0
-    else:
-        cs_lc0 = None
 
     for i in range(n):
 
@@ -572,204 +307,43 @@ def satposs(obs, nav, cs=None, orb=None):
         sys, _ = sat2prn(sat)
 
         # Skip undesired constellations
-        #
         if sys not in obs_sig_keys:
             continue
 
-        pr = obs.P[i, 0]  # TODO: catch invalid observation!
+        pr = obs.P[i, 0]
         t = timeadd(obs.t, -pr/rCST.CLIGHT)
 
-        if has_precise_orbit:
-
-            rs_, dts_, _ = orb.peph2pos(t, sat, nav)
-            if rs_ is None or dts_ is None or np.isnan(dts_[0]):
+        if sys == uGNSS.GLO:
+            geph = findeph(nav.geph, t, sat, mode=0)
+            if geph is None:
+                svh[i] = 1
                 continue
-            dt = dts_[0]
-
-            if sys == uGNSS.GLO and len(nav.geph) > 0:
-                geph = findeph(nav.geph, t, sat)
-                if geph is None:
-                    svh[i] = 1
-                    continue
-                svh[i] = geph.svh
-
-                if sat not in nav.glo_ch:
-                    nav.glo_ch[sat] = geph.frq
-
-            elif len(nav.eph) > 0:
-                eph = findeph(nav.eph, t, sat)
-                if eph is None:
-                    svh[i] = 1
-                    continue
-                svh[i] = eph.svh
-
-            else:
-                svh[i] = 0
-
+            svh[i] = geph.svh
+            dt = geph2clk(t, geph)
+            if sat not in nav.glo_ch:
+                nav.glo_ch[sat] = geph.frq
         else:
+            eph = findeph(nav.eph, t, sat, mode=0)
+            if eph is None:
+                svh[i] = 1
+                continue
+            svh[i] = eph.svh
+            dt = eph2clk(t, eph)
 
-            if cs is not None:
-
-                if orbit_iod_ok:
-                    if sat not in sat_n_set:
-                        continue
-                elif orbit_pred_ok:
-                    if sat not in sat_n_p_set:
-                        continue
-                else:
-                    continue
-
-                if sat not in iode_map:
-                    continue
-
-                iode = iode_map[sat]
-                dorb = dorb_map[sat]  # radial,along-track,cross-track
-
-                if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                    dorb += dvel_map[sat] * timediff(obs.t, t0_map[sat][sCType.ORBIT])
-
-                if cssr_mode == sc.BDS_PPP:  # consistency check for IOD corr
-
-                    if cs_lc0.iodc[sat] == cs_lc0.iodc_c[sat]:
-                        dclk = dclk_map[sat]
-                    else:
-                        if cs_lc0.iodc[sat] == cs_lc0.iodc_c_p[sat]:
-                            dclk = cs_lc0.dclk_p[sat]
-                        else:
-                            continue
-
-                else:
-
-                    if cssr_mode == sc.GAL_HAS_SIS:  # HAS only
-                        if cs.mask_id != cs.mask_id_clk:  # mask has changed
-                            if sat not in sat_n_p_set:
-                                continue
-                    else:
-                        if clock_iod == cs.iodssr:
-                            if sat not in sat_n_set:
-                                continue
-                        else:
-                            if clock_iod == cs.iodssr_p:
-                                if sat not in sat_n_p_set:
-                                    continue
-                            else:
-                                continue
-
-                    if sat in dclk_map:
-                        dclk = dclk_map[sat]
-                    else:
-                        continue
-
-                    if cs_lc0.cstat & (1 << sCType.HCLOCK) and \
-                            sat in hclk_map and \
-                            not np.isnan(hclk_map[sat]):
-                        dclk += hclk_map[sat]
-
-                    if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                        dclk += ddft_map[sat] * timediff(obs.t, t0_map[sat][sCType.CLOCK])
-
-                if np.isnan(dclk) or np.isnan(dorb@dorb):
-                    continue
-
-                mode = cs.nav_mode[sys]
-
-            else:
-
-                mode = 0
-
-            if sys == uGNSS.GLO:
-                geph = findeph(nav.geph, t, sat, iode, mode=mode)
-                if geph is None:
-                    svh[i] = 1
-                    continue
-
-                svh[i] = geph.svh
-                dt = geph2clk(t, geph)
-
-                if sat not in nav.glo_ch:
-                    nav.glo_ch[sat] = geph.frq
-
-            else:
-                eph = findeph(nav.eph, t, sat, iode, mode=mode)
-                if eph is None:
-                    svh[i] = 1
-                    continue
-
-                svh[i] = eph.svh
-                dt = eph2clk(t, eph)
-
+        # Re-evaluate at clock-corrected transmission time
         t = timeadd(t, -dt)
 
-        if has_precise_orbit:  # precise ephemeris
-
-            rs_, dts_, _ = orb.peph2pos(t, sat, nav)
-            rs[i, :] = rs_[0: 3]
-            vs[i, :] = rs_[3: 6]
-            dts[i] = dts_[0]
-            nsat += 1
-
+        if sys == uGNSS.GLO:
+            rs[i, :], vs[i, :], dts[i] = geph2pos(t, geph, True)
         else:
-
-            if sys == uGNSS.GLO:
-                rs[i, :], vs[i, :], dts[i] = geph2pos(t, geph, True)
-            else:
-                rs[i, :], vs[i, :], dts[i] = eph2pos(t, eph, True)
-
-            # Apply SSR correction
-            #
-            if cs is not None:
-
-                if cssr_mode == sc.BDS_PPP:
-                    er = vnorm(rs[i, :])
-                    rc = np.cross(rs[i, :], vs[i, :])
-                    ec = vnorm(rc)
-                    ea = np.cross(ec, er)
-                    A = np.array([er, ea, ec])
-                else:
-                    ea = vnorm(vs[i, :])
-                    rc = np.cross(rs[i, :], vs[i, :])
-                    ec = vnorm(rc)
-                    er = np.cross(ea, ec)
-                    A = np.array([er, ea, ec])
-
-                if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                    dorb_e = dorb
-                else:
-                    dorb_e = dorb@A
-
-                rs[i, :] -= dorb_e
-                dts[i] += dclk/rCST.CLIGHT
-
-                if cssr_mode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5,
-                                   sc.DGPS) and sys == uGNSS.GPS:
-                    dts[i] -= eph.tgd
-                    # eph_c = findeph(nav.eph, t, sat, mode=1)  # L5 CNAV
-                    # if eph_c is not None:
-                    #    gam15 = (154/115)**2
-                    #    dts[i] += (eph_c.isc[3]-gam15*eph_c.isc[0])/(1-gam15)
-
-                ers = vnorm(rs[i, :]-nav.x[0: 3])
-                dorb_ = -ers@dorb_e
-                sis = dclk-dorb_
-                if t0_map[sat][sCType.ORBIT].time % 30 == 0 and \
-                        timediff(t0_map[sat][sCType.ORBIT], nav.time_p) > 0:
-                    if abs(nav.sis[sat]) > 0:
-                        nav.dsis[sat] = sis - nav.sis[sat]
-                    nav.sis[sat] = sis
-
-                nav.dorb[sat] = dorb_
-                nav.dclk[sat] = dclk
-
-            elif nav.smode == 1 and nav.nf == 1:  # stand-alone positioning
+            rs[i, :], vs[i, :], dts[i] = eph2pos(t, eph, True)
+            if nav.smode == 1 and nav.nf == 1:  # single-freq standalone
                 dts[i] -= eph.tgd
 
-            nsat += 1
-
-    if cs is not None:
-        if sat in t0_map and sCType.ORBIT in t0_map[sat]:
-            nav.time_p = t0_map[sat][sCType.ORBIT]
+        nsat += 1
 
     return rs, vs, dts, svh, nsat
+
 
 
 def loadXmlAlmanac(fname, sys=uGNSS.GAL):
