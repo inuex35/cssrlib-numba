@@ -96,8 +96,8 @@ class rtkpos(pppos):
         self.nav.tidecorr = uTideModel.NONE
         self.base_nav.tidecorr = uTideModel.NONE
 
-    def base_process_dd_only(self, obs, obsb, rs, dts, svh,
-                             rsb=None, dtsb=None, svhb=None):
+    def single_differences(self, obs, obsb, rs, dts, svh,
+                           rsb=None, dtsb=None, svhb=None):
         """Build rover-base single differences for DD-only pipelines.
 
         Runs quality control on both receivers, intersects the common
@@ -136,7 +136,7 @@ class rtkpos(pppos):
         """Deprecated alias kept for compatibility: forwards to the DD-only
         path. The undifferenced (zdres-based) variant was removed with the
         minimal core; ``y``/``e`` are returned as ``None``."""
-        iu, obs_ = self.base_process_dd_only(
+        iu, obs_ = self.single_differences(
             obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb)
         return None, None, iu, obs_
 
@@ -149,7 +149,7 @@ class rtkpos(pppos):
     def _row_has_nonzero(row):
         return np.any(row != 0)
 
-    def manage_ambiguities_external(self, obs):
+    def update_ambiguities(self, obs):
         """Initialize / reset the float ambiguity states for this epoch.
 
         Does the per-satellite ambiguity bookkeeping (cycle-slip / outage
@@ -252,7 +252,7 @@ class rtkpos(pppos):
         if rsb is None or dtsb is None or svhb is None:
             rsb, vsb, dtsb, svhb, _ = satposs(obsb, self.nav)
 
-        iu, obs_sd = self.base_process_dd_only(
+        iu, obs_sd = self.single_differences(
             obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb
         )
         ns = len(iu)
@@ -340,3 +340,8 @@ class rtkpos(pppos):
         )
 
         return result
+
+    # Deprecated aliases for the previous names (the "_external" / "_dd_only"
+    # suffixes lost their meaning once the internal EKF was removed).
+    manage_ambiguities_external = update_ambiguities
+    base_process_dd_only = single_differences
