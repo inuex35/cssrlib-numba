@@ -444,8 +444,8 @@ class pppos():
                         s[1] / s[0] >= self.nav.thresar)
 
             if ratio_ok:
-                # Demote excluded sats' fix flag from 2 → 1 so restamb() and
-                # holdamb() only act on the accepted subset.
+                # Demote excluded sats' fix flag from 2 → 1 so restamb()
+                # only acts on the accepted subset.
                 dropped = np.where(~active)[0]
                 for gidx in dropped:
                     t_idx = ix_full[gidx, 1]  # index into nav.x
@@ -798,8 +798,9 @@ class pppos():
                 if code == 0:
                     continue
                 # LLI=1 is a cycle-slip notification, not a bad observation:
-                # flag the sat for ambiguity reset in udstate but keep the
-                # measurement (RTKLIB-style behavior). Other codes drop it.
+                # flag the sat for ambiguity reset (consumed by
+                # manage_ambiguities_external) but keep the measurement
+                # (RTKLIB-style behavior). Other codes drop it.
                 if code == 1:
                     self.nav.slip[i, f] = 1
                 else:

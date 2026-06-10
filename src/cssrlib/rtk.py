@@ -98,12 +98,12 @@ class rtkpos(pppos):
 
     def base_process_dd_only(self, obs, obsb, rs, dts, svh,
                              rsb=None, dtsb=None, svhb=None):
-        """Light variant of base_process for DD-only pipelines.
+        """Build rover-base single differences for DD-only pipelines.
 
-        Skips zdres on the base receiver (y / e arrays are unused by
-        callers that build their own DD residuals downstream), so this
-        is the right entry point when the rover-side state estimate is
-        being maintained outside cssrlib (e.g. in a GTSAM factor graph).
+        Runs quality control on both receivers, intersects the common
+        satellites and differences their L / P observations. The right
+        entry point when the state estimate is maintained outside cssrlib
+        (e.g. in a GTSAM factor graph).
 
         Returns (iu, obs_), where obs_ carries rover-base differenced
         L / P at the common satellite set. Pre-computed base satellite
@@ -150,10 +150,12 @@ class rtkpos(pppos):
         return np.any(row != 0)
 
     def manage_ambiguities_external(self, obs):
-        """Update ambiguity/reset state without running udstate/kfupdate.
+        """Initialize / reset the float ambiguity states for this epoch.
 
-        Intended for external solvers (e.g. GTSAM) that reuse cssrlib's
-        ambiguity bookkeeping but own the state propagation/update step.
+        Does the per-satellite ambiguity bookkeeping (cycle-slip / outage
+        resets and fresh-ambiguity initialization) without any Kalman
+        time/measurement update. Intended for external solvers (e.g. GTSAM)
+        that reuse cssrlib's ambiguity bookkeeping but own the state.
         """
         ns = len(obs.sat)
         sat = obs.sat
@@ -196,10 +198,9 @@ class rtkpos(pppos):
                     self.initx(cp - pr/lam, self.nav.sig_n0**2, j)
 
         # Slip flags consumed: clear so the next qcedit starts clean.
-        # Mirrors udstate's slip[:] = 0 at end. Without this, any sat that
-        # ever sees an LLI/GF slip stays flagged forever and triggers an
-        # ambiguity reset every subsequent epoch — wiping the freshly
-        # initialized N before AR can ever ratio-test.
+        # Without this, any sat that ever sees an LLI/GF slip stays flagged
+        # forever and triggers an ambiguity reset every subsequent epoch —
+        # wiping the freshly initialized N before AR can ever ratio-test.
         self.nav.slip[:] = 0
 
     def prepare_double_difference_measurements(
