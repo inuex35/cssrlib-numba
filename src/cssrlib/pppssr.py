@@ -8,15 +8,9 @@ from numba import njit
 from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST, SAT_SYS_ARR
 from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, time2str, timediff
-from cssrlib.gnss import gpst2utc, uIonoModel, time2doy, uTideModel
+from cssrlib.gnss import uIonoModel, time2doy, uTideModel
 from cssrlib.mlambda import mlambda
 from cssrlib.atmosphere import tropmapf_niell
-# NOTE: cssrlib.ppp (Earth tides, phase wind-up), cssrlib.peph (antenna
-# models) and cssrlib.cssrlib (SSR/CSSR enums) are imported lazily inside the
-# methods that use them (zdres, qcedit tide branch, antModel*_fast,
-# _sig0_table). This keeps the broadcast-ephemeris RTK path -- which never
-# touches SSR corrections, receiver-antenna PCV or tides -- free of those
-# heavier modules. See _sig0_table() and the lazy imports below.
 from cssrlib.constants import CLIGHT, GME
 from cssrlib.geometry import geodist, satazel
 
@@ -29,77 +23,6 @@ fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
     "{:10.3f} {:10.3f} {:10.3f}\n"
 
 MIN_SIN_EL = 0.1 * rCST.D2R
-
-_SIG0_TABLE_CACHE = None
-
-
-def _sig0_table():
-    """SSR reference-signal table keyed by SSR mode.
-
-    Built lazily on first use (zdres with SSR corrections) so that the
-    broadcast-ephemeris RTK path does not import cssrlib.cssrlib just to
-    define this module-level constant.
-    """
-    global _SIG0_TABLE_CACHE
-    if _SIG0_TABLE_CACHE is not None:
-        return _SIG0_TABLE_CACHE
-    from cssrlib.cssrlib import sCSSRTYPE as sc
-    _SIG0_TABLE_CACHE = {
-        sc.QZS_MADOCA: {
-            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-            uGNSS.GLO: (rSigRnx("RC1C"), rSigRnx("RC2C")),
-            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-            uGNSS.QZS: (rSigRnx("JC1C"), rSigRnx("JC2S")),
-        },
-        sc.GAL_HAS_SIS: {
-            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC7Q")),
-        },
-        sc.GAL_HAS_IDD: {
-            uGNSS.GPS: (rSigRnx("GC1C"),),
-            uGNSS.GLO: (rSigRnx("RC1C"),),
-            uGNSS.GAL: (rSigRnx("EC1C"),),
-            uGNSS.BDS: (rSigRnx("CC2I"),),
-            uGNSS.QZS: (rSigRnx("JC1C"),),
-        },
-        sc.IGS_SSR: {
-            uGNSS.GPS: (rSigRnx("GC1C"),),
-            uGNSS.GLO: (rSigRnx("RC1C"),),
-            uGNSS.GAL: (rSigRnx("EC1C"),),
-            uGNSS.BDS: (rSigRnx("CC2I"),),
-            uGNSS.QZS: (rSigRnx("JC1C"),),
-        },
-        sc.RTCM3_SSR: {
-            uGNSS.GPS: (rSigRnx("GC1C"),),
-            uGNSS.GLO: (rSigRnx("RC1C"),),
-            uGNSS.GAL: (rSigRnx("EC1C"),),
-            uGNSS.BDS: (rSigRnx("CC2I"),),
-            uGNSS.QZS: (rSigRnx("JC1C"),),
-        },
-        sc.BDS_PPP: {
-            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-            uGNSS.BDS: (rSigRnx("CC6I"),),
-        },
-        sc.QZS_CLAS: {
-            uGNSS.GPS: (rSigRnx("GC1W"), rSigRnx("GC2W")),
-        },
-        sc.PVS_PPP: {
-            uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
-            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-            uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
-        },
-        sc.SBAS_L1: {
-            uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
-            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-            uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
-        },
-        sc.SBAS_L5: {
-            uGNSS.GPS: (rSigRnx("GC1C"), rSigRnx("GC5Q")),
-            uGNSS.GAL: (rSigRnx("EC1C"), rSigRnx("EC5Q")),
-            uGNSS.SBS: (rSigRnx("SC1C"), rSigRnx("SC5Q")),
-        },
-    }
-    return _SIG0_TABLE_CACHE
 
 
 TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
@@ -700,28 +623,6 @@ def _zdres_core(
     return prc_row, cpc_row
 
 
-def antModelRx_fast(nav, pos, e_vec, sigs, rtype):
-    """Return contiguous receiver antenna corrections with NaNs zeroed."""
-
-    from cssrlib.peph import antModelRx
-    vals = antModelRx(nav, pos, e_vec, sigs, rtype)
-    if vals is None:
-        return np.zeros(len(sigs), dtype=np.float64)
-    arr = np.asarray(vals, dtype=np.float64)
-    return np.nan_to_num(arr, nan=0.0)
-
-
-def antModelTx_fast(nav, e_vec, sigs, sat, time, rs, sig0=None):
-    """Return contiguous satellite antenna corrections with NaNs zeroed."""
-
-    from cssrlib.peph import antModelTx
-    vals = antModelTx(nav, e_vec, sigs, sat, time, rs, sig0)
-    if vals is None:
-        return np.zeros(len(sigs), dtype=np.float64)
-    arr = np.asarray(vals, dtype=np.float64)
-    return np.nan_to_num(arr, nan=0.0)
-
-
 class pppos():
     """ class for PPP processing """
 
@@ -1149,52 +1050,15 @@ class pppos():
 
         return 0
 
-    def find_bias(self, cs, sigref, sat, inet=0):
-        """ find satellite signal bias from correction """
-        from cssrlib.cssrlib import sCSSRTYPE as sc
-        nf = len(sigref)
-        v = np.zeros(nf)
-
-        if nf == 0:
-            return v
-
-        ctype = sigref[0].typ
-        if ctype == uTYP.C:
-            if cs.lc[inet].cbias is None or \
-                    sat not in cs.lc[inet].cbias.keys():
-                return v
-            sigc = cs.lc[inet].cbias[sat]
-        else:
-            if cs.lc[inet].pbias is None or \
-                    sat not in cs.lc[inet].pbias.keys():
-                return v
-            sigc = cs.lc[inet].pbias[sat]
-
-        # work-around for Galileo HAS: L2P -> L2W
-        if cs.cssrmode in [sc.GAL_HAS_SIS, sc.GAL_HAS_IDD]:
-            if ctype == uTYP.C and rSigRnx('GC2P') in sigc.keys():
-                sigc[rSigRnx('GC2W')] = sigc[rSigRnx('GC2P')]
-            if ctype == uTYP.L and rSigRnx('GL2P') in sigc.keys():
-                sigc[rSigRnx('GL2W')] = sigc[rSigRnx('GL2P')]
-
-        for k, sig in enumerate(sigref):
-            if sig in sigc.keys():
-                v[k] = sigc[sig]
-            elif sig.toAtt('X') in sigc.keys():
-                v[k] = sigc[sig.toAtt('X')]
-        return v
-
     def zdres(self, obs, cs, bsx, rs, vs, dts, rr, rtype=1):
-        """ non-differential residual """
+        """ non-differential residual (broadcast-ephemeris RTK).
 
-        # SSR enums are only needed when SSR corrections are supplied; import
-        # them lazily so the broadcast-ephemeris path stays free of
-        # cssrlib.cssrlib.
-        if cs is not None:
-            from cssrlib.cssrlib import sCType, sCSSRTYPE as sc
+        The SSR-correction, receiver/satellite antenna-model, phase wind-up
+        and Earth-tide paths were removed with the minimal core; ``cs`` and
+        ``bsx`` are accepted for signature compatibility but ignored.
+        """
 
         _c = rCST.CLIGHT
-        ns2m = _c*1e-9
 
         nf = self.nav.nf
         n = len(obs.P)
@@ -1202,20 +1066,6 @@ class pppos():
         el = np.zeros(n)
         e = np.zeros((n, 3))
         rr_ = rr.copy()
-
-        # Solid Earth tide corrections
-        #
-        if self.nav.tidecorr == uTideModel.SIMPLE:
-            from cssrlib.ppp import tidedisp
-            pos = ecef2pos(rr_)
-            disp = tidedisp(gpst2utc(obs.t), pos)
-        elif self.nav.tidecorr == uTideModel.IERS2010:
-            from cssrlib.ppp import tidedispIERS2010
-            pos = ecef2pos(rr_)
-            disp = tidedispIERS2010(gpst2utc(obs.t), pos)
-        else:
-            disp = np.zeros(3)
-        rr_ += disp
 
         # Geodetic position
         #
@@ -1241,26 +1091,10 @@ class pppos():
             float(doy),
         )
 
-        inet_sat_index = {}
-        if self.nav.trop_opt == 2 or self.nav.iono_opt == 2:  # from cssr
-            inet = cs.find_grid_index(pos)
-            dlat, dlon = cs.get_dpos(pos)
-            if inet > 0:
-                sat_array = np.array(cs.lc[inet].sat_n, dtype=np.int64)
-                for idx, sat_id in enumerate(sat_array):
-                    inet_sat_index[int(sat_id)] = idx
-        else:
-            inet = -1
-
-        if self.nav.trop_opt == 2:  # trop from cssr
-            trph, trpw = cs.get_trop(dlat, dlon)
-            trop_hs0, trop_wet0, _ = tropmodel(obs.t, [pos[0], pos[1], 0],
-                                               model=self.nav.trpModel)
-            r_hs = trop_hs/trop_hs0
-            r_wet = trop_wet/trop_wet0
-
-        if self.nav.iono_opt == 2:  # iono from cssr
-            stec = cs.get_stec(dlat, dlon)
+        # SSR-grid trop/iono (trop_opt/iono_opt == 2) was removed with the
+        # minimal core; only the model-based tropo and an iono-free / model
+        # iono path remain.
+        inet = -1
 
         cpc = np.zeros((n, nf))
         prc = np.zeros((n, nf))
@@ -1299,62 +1133,9 @@ class pppos():
             L_sel_vec = L_sel_all[i, :]
             P_sel_vec = P_sel_all[i, :]
 
+            # SSR / OSB code & phase biases were removed with the minimal core.
             cbias = np.zeros(self.nav.nf, dtype=np.float64)
             pbias = np.zeros(self.nav.nf, dtype=np.float64)
-
-            if self.nav.ephopt == 4:
-                cbias_vals = np.asarray(
-                    [bsx.getosb(sat, obs.t, s) for s in sigsPR],
-                    dtype=np.float64,
-                )
-                cbias = _compute_bias_bsx(
-                    np.ascontiguousarray(cbias_vals, dtype=np.float64),
-                    float(ns2m),
-                    int(self.nav.nf),
-                )
-                if sys != uGNSS.GLO:
-                    pbias_vals = np.asarray(
-                        [bsx.getosb(sat, obs.t, s) for s in sigsCP],
-                        dtype=np.float64,
-                    )
-                    pbias = _compute_bias_bsx(
-                        np.ascontiguousarray(pbias_vals, dtype=np.float64),
-                        float(ns2m),
-                        int(self.nav.nf),
-                    )
-            elif cs is not None:
-                cbias_global = np.zeros(len(sigsPR), dtype=np.float64)
-                cbias_regional = np.zeros(len(sigsPR), dtype=np.float64)
-                pbias_global = np.zeros(len(sigsCP), dtype=np.float64)
-                pbias_regional = np.zeros(len(sigsCP), dtype=np.float64)
-                if cs.lc[0].cstat & (1 << sCType.CBIAS):
-                    cbias_global += self.find_bias(cs, sigsPR, sat)
-                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.CBIAS):
-                    cbias_regional += self.find_bias(cs, sigsPR, sat, inet)
-                if cs.lc[0].cstat & (1 << sCType.PBIAS):
-                    pbias_global += self.find_bias(cs, sigsCP, sat)
-                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.PBIAS):
-                    pbias_regional += self.find_bias(cs, sigsCP, sat, inet)
-                flip = cs.cssrmode in (sc.QZS_CLAS, sc.BDS_PPP, sc.PVS_PPP)
-                cbias = _combine_cssr_bias(
-                    np.ascontiguousarray(cbias_global, dtype=np.float64),
-                    np.ascontiguousarray(cbias_regional, dtype=np.float64),
-                    int(self.nav.nf),
-                    bool(flip),
-                )
-                pbias = _combine_cssr_bias(
-                    np.ascontiguousarray(pbias_global, dtype=np.float64),
-                    np.ascontiguousarray(pbias_regional, dtype=np.float64),
-                    int(self.nav.nf),
-                    bool(flip),
-                )
-
-            # Check for invalid biases
-            #
-            if np.isnan(cbias).any() or np.isnan(pbias).any():
-                if self.nav.monlevel > 3:
-                    print("skip invalid cbias/pbias for sat={:d}".format(sat))
-                continue
 
             # Geometric distance corrected for Earth rotation
             # during flight time
@@ -1375,86 +1156,18 @@ class pppos():
             mapfh = mapfh_all[i]
             mapfw = mapfw_all[i]
 
-            # Tropospheric delay
+            # Tropospheric delay (model)
             #
-            if self.nav.trop_opt == 2:  # from cssr
-                trop = mapfh*trph*r_hs+mapfw*trpw*r_wet
-            else:
-                trop = mapfh*trop_hs + mapfw*trop_wet
+            trop = mapfh*trop_hs + mapfw*trop_wet
 
-            # Ionospheric delay
-            #
-            if self.nav.iono_opt == 2 and inet > 0:
-                idx_l = inet_sat_index.get(int(sat), -1)
-                if idx_l >= 0:
-                    iono = 40.3e16/(frq_vec*frq_vec)*stec[idx_l]
-                else:
-                    iono = np.zeros(nf)
-            else:
-                iono = np.zeros(nf)
-
-            # Phase wind-up effect
-            #
-            if self.nav.phw_opt > 0:
-                from cssrlib.ppp import windupcorr
-                phw_mode = (False if self.nav.phw_opt == 2 else True)
-                self.nav.phw[sat-1] = windupcorr(obs.t, rs[i, :], vs[i, :],
-                                                 rr_, self.nav.phw[sat-1],
-                                                 full=phw_mode)
-
-                # cycle -> m
-                phw = lam_vec*self.nav.phw[sat-1]
-            else:
-                phw = np.zeros(nf)
-
-            # Select APC reference signals
-            #
-            sig0 = None
-            if cs is not None:
-                sig0_table = _sig0_table()
-                if cs.cssrmode in sig0_table:
-                    sig0 = sig0_table[cs.cssrmode].get(sys, None)
-
-            # Receiver/satellite antenna offset
-            #
-            if self.nav.rcv_ant is None:
-                antrPR = np.zeros(nf)
-                antrCP = np.zeros(nf)
-            else:
-                ant_rx_pr = antModelRx_fast(self.nav, pos, e[i, :], sigsPR, rtype)
-                ant_rx_cp = antModelRx_fast(self.nav, pos, e[i, :], sigsCP, rtype)
-                antrPR = _gather_or_zero(ant_rx_pr, col_idx_arr)
-                antrCP = _gather_or_zero(ant_rx_cp, col_idx_arr)
-
+            # Ionospheric / phase wind-up / antenna corrections were removed
+            # with the minimal core (they cancel in the short-baseline DD).
+            iono = np.zeros(nf)
+            phw = np.zeros(nf)
+            antrPR = np.zeros(nf)
+            antrCP = np.zeros(nf)
             antsPR = np.zeros(nf)
             antsCP = np.zeros(nf)
-            if self.nav.ephopt == 4:
-                antsPR_all = antModelTx_fast(
-                    self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :]
-                )
-                antsCP_all = antModelTx_fast(
-                    self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :]
-                )
-                antsPR = _gather_or_zero(antsPR_all, col_idx_arr)
-                antsCP = _gather_or_zero(antsCP_all, col_idx_arr)
-            elif cs is not None and cs.cssrmode in (
-                sc.QZS_MADOCA, sc.GAL_HAS_SIS, sc.GAL_HAS_IDD,
-                sc.IGS_SSR, sc.RTCM3_SSR, sc.BDS_PPP, sc.PVS_PPP
-            ) and sig0 is not None:
-                antsPR_all = antModelTx_fast(
-                    self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :], sig0
-                )
-                antsCP_all = antModelTx_fast(
-                    self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :], sig0
-                )
-                antsPR = _gather_or_zero(antsPR_all, col_idx_arr)
-                antsCP = _gather_or_zero(antsCP_all, col_idx_arr)
-
-            # Check for invalid values
-            #
-            if antrPR is None or antrCP is None or \
-               antsPR is None or antsCP is None:
-                continue
 
             iono_vec = np.ascontiguousarray(iono, dtype=np.float64)
             antr_pr_vec = np.ascontiguousarray(antrPR, dtype=np.float64)
@@ -2142,21 +1855,11 @@ class pppos():
             if self.nav.pmode > 0:
                 rr_ += self.nav.x[3:6]*tt
         else:
-            rr_ = rr
+            # rr may be a plain list (e.g. nav.rb); coerce to a float64 array.
+            rr_ = np.asarray(rr, dtype=np.float64)
 
-        # Solid Earth tide corrections
-        #
-        if self.nav.tidecorr == uTideModel.SIMPLE:
-            from cssrlib.ppp import tidedisp
-            pos = ecef2pos(rr_)
-            disp = tidedisp(gpst2utc(obs.t), pos)
-        elif self.nav.tidecorr == uTideModel.IERS2010:
-            from cssrlib.ppp import tidedispIERS2010
-            pos = ecef2pos(rr_)
-            disp = tidedispIERS2010(gpst2utc(obs.t), pos)
-        else:
-            disp = np.zeros(3)
-        rr_ += disp
+        # Solid Earth tides were removed with the minimal core (they cancel
+        # in the short-baseline rover-base double difference).
 
         # Geodetic position
         #

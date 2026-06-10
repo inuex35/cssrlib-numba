@@ -91,9 +91,8 @@ class rtkpos(pppos):
         self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
 
         # Solid Earth tides cancel in the rover-base double difference at the
-        # short baselines RTK targets, so they are disabled by default. This
-        # also keeps the RTK path free of the cssrlib.ppp / cssrlib.peph
-        # modules. Re-enable via nav.tidecorr for long baselines if needed.
+        # short baselines RTK targets, so they are disabled (the tide model
+        # was removed with the minimal core).
         self.nav.tidecorr = uTideModel.NONE
         self.base_nav.tidecorr = uTideModel.NONE
 

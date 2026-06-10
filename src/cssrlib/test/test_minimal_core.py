@@ -1,88 +1,48 @@
 """
-Lock in the minimal dependency surface of the broadcast-ephemeris RTK path.
+Lock in the minimal module set of the broadcast-ephemeris RTK core.
 
-The SSR/PPP machinery (cssrlib.cssrlib, cssrlib.peph, cssrlib.ppp) is imported
-lazily, so a plain ``import cssrlib.rtk`` -- and the double-difference RTK
-workflow used by external estimators (GTSAM) -- must not pull those heavier
-modules. These checks run in a fresh subprocess so the measurement is not
-polluted by modules other tests already imported.
+The SSR/CSSR (cssrlib.cssrlib), antenna-model (cssrlib.peph) and Earth-tide /
+phase-wind-up (cssrlib.ppp) modules were removed; this checks they are gone
+and that the double-difference RTK workflow used by external estimators
+(GTSAM) needs only the lightweight remaining modules.
 """
 
-import subprocess
-import sys
-import textwrap
+import importlib
+
+import pytest
+
+REMOVED = ("cssrlib.ppp", "cssrlib.peph", "cssrlib.cssrlib")
+CORE = ("cssrlib.gnss", "cssrlib.rinex", "cssrlib.ephemeris", "cssrlib.orbit",
+        "cssrlib.glonass", "cssrlib.mlambda", "cssrlib.geometry",
+        "cssrlib.pppssr", "cssrlib.rtk", "cssrlib.atmosphere",
+        "cssrlib.constants")
 
 
-HEAVY = ("cssrlib.ppp", "cssrlib.peph", "cssrlib.cssrlib")
+@pytest.mark.parametrize("mod", REMOVED)
+def test_heavy_modules_removed(mod):
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(mod)
 
 
-def _run(code):
-    out = subprocess.run([sys.executable, "-c", textwrap.dedent(code)],
-                         capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+@pytest.mark.parametrize("mod", CORE)
+def test_core_modules_import(mod):
+    assert importlib.import_module(mod) is not None
 
 
-def test_import_rtk_is_lean():
-    """import cssrlib.rtk must not load the SSR/PPP/antenna modules."""
-    code = """
-        import sys
-        import cssrlib.rtk            # noqa: F401
-        heavy = [m for m in ('cssrlib.ppp', 'cssrlib.peph', 'cssrlib.cssrlib')
-                 if m in sys.modules]
-        print('HEAVY:' + ','.join(heavy))
-    """
-    assert _run(code) == "HEAVY:"
-
-
-def test_dd_only_path_is_lean():
-    """The DD-only external RTK workflow must not load SSR/PPP/antenna code."""
-    code = """
-        import os, sys
-        import numpy as np
-        import cssrlib.rinex as rn
-        import cssrlib.gnss as gn
-        from cssrlib.rtk import rtkpos
-        from cssrlib.gnss import rSigRnx
-
-        d = os.path.join(os.path.dirname(rn.__file__), 'data') + os.sep
-        sigs = [rSigRnx('GC1C'), rSigRnx('GC2W'), rSigRnx('GL1C'),
-                rSigRnx('GL2W'), rSigRnx('GS1C'), rSigRnx('GS2W')]
-        dec = rn.rnxdec(); dec.setSignals(sigs)
-        nav = gn.Nav(); dec.decode_nav(d + 'SEPT078M.21P', nav)
-        decb = rn.rnxdec(); decb.setSignals(sigs)
-        decb.decode_obsh(d + '3034078M1.21O'); dec.decode_obsh(d + 'SEPT078M1.21O')
-        nav.rb = [-3959400.631, 3385704.533, 3667523.111]
-        rtk = rtkpos(nav, dec.pos)
-        sync = rn.sync_obs_hold(dec, decb, maxage=nav.maxtdiff)
-        for k, (obs, obsb, dt) in enumerate(sync):
-            if k >= 5:
-                break
-            if k == 0:
-                nav.t = obs.t
-            dd = rtk.prepare_double_difference_measurements(
-                obs, obsb, pos_pred=nav.x[0:3].copy(),
-                dd_only=True, compute_zdres=False)
-            if dd is not None:
-                rtk.manage_ambiguities_external(dd.obs_sd)
-        dec.fobs.close(); decb.fobs.close()
-        heavy = [m for m in ('cssrlib.ppp', 'cssrlib.peph', 'cssrlib.cssrlib')
-                 if m in sys.modules]
-        print('HEAVY:' + ','.join(heavy))
-    """
-    assert _run(code) == "HEAVY:"
-
-
-def test_utidemodel_reexport():
-    """uTideModel moved to gnss; ppp re-exports the same object."""
-    from cssrlib.gnss import uTideModel as a
-    from cssrlib.ppp import uTideModel as b
-    assert a is b
-    assert int(a.IERS2010) == 1 and int(a.NONE) == -1
+def test_utidemodel_in_gnss():
+    """uTideModel now lives in gnss (it left ppp with the minimal core)."""
+    from cssrlib.gnss import uTideModel
+    assert int(uTideModel.IERS2010) == 1 and int(uTideModel.NONE) == -1
 
 
 if __name__ == "__main__":
-    test_import_rtk_is_lean()
-    test_dd_only_path_is_lean()
-    test_utidemodel_reexport()
+    for m in REMOVED:
+        try:
+            importlib.import_module(m)
+            raise SystemExit(f"{m} should have been removed")
+        except ModuleNotFoundError:
+            pass
+    for m in CORE:
+        importlib.import_module(m)
+    test_utidemodel_in_gnss()
     print("OK")

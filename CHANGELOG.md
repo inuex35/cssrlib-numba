@@ -5,20 +5,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Removed
+
+- Stripped the library down to a minimal broadcast-ephemeris RTK + LAMBDA
+  core (11 modules, down from 31). Deleted everything not used by that
+  workflow: SSR/CSSR decoders and base (`cssr_bds/has/mdc/pvs`, `cssrlib`,
+  `rtcm`), antenna/precise-orbit (`peph`), Earth tides / phase wind-up
+  (`ppp`), SBAS & authentication (`sbas`, `osnma`, `qznma`, `ewss`), other
+  positioning modes (`dgps`, `pntpos`, `ppprtk`), receiver raw nav
+  (`rawnav`) and misc (`ionosphere`, `tlesim`, `plot`, `utils`).
+  Correspondingly trimmed `ephemeris.satposs` (broadcast-only; removed
+  `satpos`) and `pppssr.zdres` / `qcedit` (dropped SSR-bias, antenna-model,
+  phase-wind-up and tide handling). Recover any of these from the `dev`
+  branch if needed.
+
 ### Changed
 
-- Minimised the broadcast-ephemeris RTK dependency surface. The SSR/CSSR
-  enums (`cssrlib.cssrlib`), antenna models (`cssrlib.peph`) and Earth
-  tides / phase wind-up (`cssrlib.ppp`) are now imported lazily, only when
-  SSR corrections, receiver-antenna PCV or tides are actually used. As a
-  result `import cssrlib.rtk` loads 10 light modules instead of 14, and the
-  double-difference RTK workflow (`prepare_double_difference_measurements`
-  with `dd_only=True, compute_zdres=False` + `manage_ambiguities_external`)
-  runs without loading any of those heavier modules — ideal for embedding in
-  an external estimator such as a GTSAM factor graph.
+- The double-difference RTK workflow
+  (`prepare_double_difference_measurements` with
+  `dd_only=True, compute_zdres=False` + `manage_ambiguities_external`) now
+  depends only on the lightweight core, ideal for embedding in an external
+  estimator such as a GTSAM factor graph.
 - `uTideModel` moved from `cssrlib.ppp` to `cssrlib.gnss` (grouped with
-  `uTropoModel` / `uIonoModel`); re-exported from `cssrlib.ppp` for
-  backward compatibility.
+  `uTropoModel` / `uIonoModel`).
 - `rtkpos` now disables solid-Earth-tide correction by default
   (`nav.tidecorr = uTideModel.NONE`): tides cancel in the rover-base double
   difference at RTK baselines. Re-enable via `nav.tidecorr` for long
