@@ -26,6 +26,16 @@ from numpy.linalg import inv
 _INV_SQRT2 = 1.0 / math.sqrt(2.0)
 
 
+class LambdaError(np.linalg.LinAlgError):
+    """Ambiguity-resolution failure (e.g. non positive-definite covariance).
+
+    Subclasses ``numpy.linalg.LinAlgError`` (and hence ``Exception``) so that
+    callers embedding LAMBDA in their own solver -- e.g. a GTSAM factor graph
+    doing AR -- can catch it with a normal ``except`` instead of having to
+    trap ``SystemExit``.
+    """
+
+
 @njit(cache=True)
 def _round_to_int(value):
     return int(np.rint(value))
@@ -325,7 +335,7 @@ def ldldecom(Q):
     Q_arr = np.asarray(Q, dtype=np.float64)
     L, d = _ldldecom(Q_arr)
     if np.any((d < 1e-10)):
-        raise SystemExit("Qah should be positive definite.")
+        raise LambdaError("Qah should be positive definite.")
     return L, d
 
 

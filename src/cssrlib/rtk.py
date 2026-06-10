@@ -11,6 +11,55 @@ from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST
 
 
+class DDMeasurements(dict):
+    """Return value of :meth:`rtkpos.prepare_double_difference_measurements`.
+
+    A plain ``dict`` (so existing ``result['rs']`` access, ``isinstance(...,
+    dict)``, ``.items()``, ``.get()`` etc. keep working) that additionally
+    supports attribute access, i.e. ``dd.rs`` as well as ``dd['rs']``. This
+    makes the contract self-documenting and IDE-friendly when the result is
+    consumed by an external estimator such as a GTSAM factor graph.
+
+    Fields
+    ------
+    rs, vs, dts, svh : np.ndarray
+        Rover satellite ECEF position [m], velocity [m/s], clock offset [s]
+        and health, aligned with ``obs.sat``.
+    rsb, vsb, dtsb, svhb : np.ndarray
+        Same quantities for the base receiver.
+    iu : np.ndarray of int
+        Indices into ``obs.sat`` of satellites common to rover and base.
+    ir : np.ndarray of int
+        Indices into ``obsb.sat`` of the same common satellites.
+    sat : np.ndarray of int
+        Common satellite numbers (``obs.sat[iu]``).
+    el : np.ndarray of float
+        Rover elevation angles [rad] for ``sat`` at ``pos_pred``.
+    obs_sd : Obs
+        Single-difference (rover - base) observations at ``sat``: ``obs_sd.L``
+        and ``obs_sd.P`` carry the per-frequency differences.
+    y, e : np.ndarray or None
+        Zero-difference base residuals / line-of-sight (``None`` when
+        ``dd_only=True``).
+    yu, eu, elu : np.ndarray or None
+        Zero-difference rover residuals / line-of-sight / elevations over the
+        full ``obs.sat`` set (``None`` when ``compute_zdres=False``).
+    pos_pred : np.ndarray
+        Receiver position used to linearise the geometry [m].
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
 class rtkpos(pppos):
     """ class for RTK processing """
 
@@ -199,8 +248,37 @@ class rtkpos(pppos):
     ):
         """Prepare rover/base relative observations without EKF update.
 
-        Returns a dict with satellite states, common-satellite indices,
-        DD observations, and rover elevations at `pos_pred`.
+        Computes the building blocks an external estimator (e.g. a GTSAM
+        factor graph) needs to form double-difference RTK factors, without
+        running cssrlib's own Kalman time/measurement update.
+
+        Parameters
+        ----------
+        obs, obsb : Obs
+            Rover and base observations for the epoch.
+        pos_pred : array-like of shape (3,), optional
+            Receiver ECEF position used to linearise the geometry. Defaults
+            to the current rover state ``nav.x[0:3]``.
+        cs, orb, bsx : optional
+            SSR corrections / precise orbit / bias objects, forwarded to
+            ``satposs`` / ``zdres`` when used.
+        rs, vs, dts, svh / rsb, vsb, dtsb, svhb : np.ndarray, optional
+            Pre-computed rover / base satellite states; pass them to skip the
+            ``satposs`` call when the caller already has them.
+        dd_only : bool, default False
+            Skip the base-side ``zdres`` (use when only DD observations are
+            needed downstream).
+        compute_zdres : bool, default True
+            Compute rover zero-difference residuals at ``pos_pred``. When
+            False, ``el`` is taken from ``nav.el`` and ``yu/eu/elu`` are None.
+
+        Returns
+        -------
+        DDMeasurements or None
+            Mapping of satellite states, common-satellite indices, DD
+            observations and rover elevations (see :class:`DDMeasurements`
+            for the full field list). ``None`` when there are too few
+            satellites or no base observations.
         """
         if len(obs.sat) == 0 or obsb is None or len(obsb.sat) == 0:
             return None
@@ -249,13 +327,13 @@ class rtkpos(pppos):
         self.nav.sat = sat
         self.nav.el[sat-1] = el
 
-        return {
+        return DDMeasurements({
             'rs': rs, 'vs': vs, 'dts': dts, 'svh': svh,
             'rsb': rsb, 'vsb': vsb, 'dtsb': dtsb, 'svhb': svhb,
             'y': y, 'e': e, 'yu': yu, 'eu': eu, 'elu': elu,
             'iu': iu, 'ir': ir, 'sat': sat, 'el': el,
             'obs_sd': obs_sd, 'pos_pred': pos_pred,
-        }
+        })
 
     @contextmanager
     def _use_nav(self, nav):
