@@ -210,6 +210,26 @@ class gnssobs():
         for j in range(self.nav.nx):
             self.nav.P[j, i] = self.nav.P[i, j] = v0 if i == j else 0
 
+    def _prepare_sat_states(self, obs, cs=None, orb=None, pos_pred=None,
+                            rs=None, vs=None, dts=None, svh=None):
+        """Shared GTSAM front-end helper: satellite states + min-sat count +
+        linearisation position.
+
+        Common to the double-difference (rtkpos) and PPP-RTK (ppprtkpos)
+        ``prepare_*_measurements`` front-ends. Runs ``satposs`` (applying SSR
+        corrections when ``cs``/``orb`` are given) unless pre-computed states
+        are passed, and defaults ``pos_pred`` to the current estimate.
+
+        Returns ``(rs, vs, dts, svh, nsat, pos_pred)``.
+        """
+        if rs is None or vs is None or dts is None or svh is None:
+            rs, vs, dts, svh, nsat = satposs(obs, self.nav, cs=cs, orb=orb)
+        else:
+            nsat = int(np.count_nonzero(~np.isnan(dts)))
+        if pos_pred is None:
+            pos_pred = self.nav.x[0:3].copy()
+        return rs, vs, dts, svh, nsat, np.asarray(pos_pred, dtype=float)
+
     def IB(self, s, f, na=3):
         """ return index of phase ambiguity """
         idx = na+uGNSS.MAXSAT*f+s-1

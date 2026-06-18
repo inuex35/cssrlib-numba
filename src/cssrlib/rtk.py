@@ -244,10 +244,8 @@ class rtkpos(gnssobs):
         if len(obs.sat) == 0 or obsb is None or len(obsb.sat) == 0:
             return None
 
-        if rs is None or vs is None or dts is None or svh is None:
-            rs, vs, dts, svh, nsat = satposs(obs, self.nav)
-        else:
-            nsat = int(np.count_nonzero(~np.isnan(dts)))
+        rs, vs, dts, svh, nsat, pos_pred = self._prepare_sat_states(
+            obs, pos_pred=pos_pred, rs=rs, vs=vs, dts=dts, svh=svh)
         self.nav.nsat[0] = len(obs.sat)
         self.nav.nsat[1] = nsat
         if nsat < 4:
@@ -267,8 +265,6 @@ class rtkpos(gnssobs):
         sat = obs.sat[iu]
         ir = np.intersect1d(obsb.sat, sat, True, True)[1]
 
-        if pos_pred is None:
-            pos_pred = self.nav.x[0:3].copy()
         # Elevations come from qcedit (no zdres in the minimal DD-only core).
         el = self.nav.el[sat-1].copy()
         self.nav.sat = sat
