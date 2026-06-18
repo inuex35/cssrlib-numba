@@ -2,17 +2,12 @@
 module for ephemeris processing
 """
 
+from cssrlib.cssrlib import sCType
+from cssrlib.cssrlib import sCSSRTYPE as sc
 import numpy as np
-from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd
+from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
     time2gpst, timeget, time2gst, time2bdt, gst2time, bdt2time, epoch2time
-from cssrlib.glonass import (
-    deq as glonass_deq,
-    glorbit as glonass_glorbit,
-    propagate_glonass as glonass_propagate,
-)
-from cssrlib.geometry import ecef2llh
-from cssrlib.orbit import broadcast_orbit
 from datetime import datetime
 import xml.etree.ElementTree as et
 
@@ -24,101 +19,26 @@ MAXDTOE_t = {uGNSS.GPS: 7201.0, uGNSS.GAL: 14400.0, uGNSS.QZS: 7201.0,
              uGNSS.SBS: 360.0}
 
 
-# Module-level cache for findeph: maps id(nav_list) -> (per_sat_dict, length).
-# Keyed by id() because nav lists don't accept setattr. Invalidated on length
-# change (caller appends/replaces ephemerides).
-_FINDEPH_CACHE = {}
-
-
-def _findeph_index(nav):
-    key = id(nav)
-    n = len(nav)
-    cached = _FINDEPH_CACHE.get(key)
-    if cached is not None and cached[1] == n:
-        return cached[0]
-    idx = {}
-    for eph_ in nav:
-        idx.setdefault(eph_.sat, []).append(eph_)
-    _FINDEPH_CACHE[key] = (idx, n)
-    # Bound cache size to avoid leaks across many ephemeris streams.
-    if len(_FINDEPH_CACHE) > 32:
-        _FINDEPH_CACHE.pop(next(iter(_FINDEPH_CACHE)))
-    return idx
-
-
-_FINDEPH_TOE_CACHE = {}
-
-
-def _findeph_toe(nav):
-    """{(sat, mode): (toe_seconds_sorted: ndarray, ephs_list, navidx_list)} cached by id(nav).
-
-    toe_seconds_sorted  -- float64 array of toe values, sorted ascending
-    ephs_list           -- list of eph objects aligned with toe_seconds_sorted
-    navidx_list         -- list of nav insertion indices aligned with toe_seconds_sorted
-
-    nav_index = position in the original nav list (enumerate order), used to
-    reproduce the original linear scan's last-wins-on-ties semantics.
-    """
-    key = id(nav)
-    n = len(nav)
-    cached = _FINDEPH_TOE_CACHE.get(key)
-    if cached is not None and cached[1] == n:
-        return cached[0]
-    table = {}
-    for nav_idx, eph_ in enumerate(nav):
-        table.setdefault((eph_.sat, eph_.mode), []).append(
-            (eph_.toe.time + eph_.toe.sec, nav_idx, eph_)
-        )
-    out = {}
-    for k, lst in table.items():
-        lst.sort(key=lambda x: x[0])  # sort by toe_seconds ascending
-        toes = np.array([x[0] for x in lst], dtype=np.float64)
-        ephs = [x[2] for x in lst]
-        navidx = [x[1] for x in lst]
-        out[k] = (toes, ephs, navidx)
-    _FINDEPH_TOE_CACHE[key] = (out, n)
-    if len(_FINDEPH_TOE_CACHE) > 32:
-        _FINDEPH_TOE_CACHE.pop(next(iter(_FINDEPH_TOE_CACHE)))
-    return out
-
-
 def findeph(nav, t, sat, iode=-1, mode=0):
     """ find ephemeris for sat """
     sys, _ = sat2prn(sat)
-    tmax = MAXDTOE_t[sys]
-    if iode < 0:
-        tbl = _findeph_toe(nav).get((sat, mode))
-        if tbl is None:
-            return None
-        toes, ephs, navidx = tbl
-        tt = t.time + t.sec
-        lo = int(np.searchsorted(toes, tt - tmax, side='left'))
-        hi = int(np.searchsorted(toes, tt + tmax, side='right'))
-        best = None; best_dt = None; best_nav = -1
-        for k in range(lo, hi):
-            dt = abs(tt - toes[k])
-            if best_dt is None or dt < best_dt or (dt == best_dt and navidx[k] > best_nav):
-                best = ephs[k]; best_dt = dt; best_nav = navidx[k]
-        return best
-    # iode >= 0: original linear scan (unchanged)
-    idx = _findeph_index(nav)
-    candidates = idx.get(sat, ())
     eph = None
-    t_time = t.time
-    t_sec = t.sec
+    tmax = MAXDTOE_t[sys]
     tmin = tmax + 1.0
-    for eph_ in candidates:
-        if iode != eph_.iode:
+    for eph_ in nav:
+        if eph_.sat != sat or (iode >= 0 and iode != eph_.iode):
             continue
         if eph_.mode != mode:
             continue
-        toe = eph_.toe
-        dt = (t_time - toe.time) + (t_sec - toe.sec)
-        if dt < 0:
-            dt = -dt
-        if dt > tmax:
+        dt = abs(timediff(t, eph_.toe))
+        if dt > tmax or eph_.mode != mode:
             continue
-        return eph_
+        if iode >= 0:
+            return eph_
+        if dt <= tmin:
+            eph = eph_
+            tmin = dt
+
     return eph
 
 
@@ -132,25 +52,65 @@ def dtadjust(t1, t2, tw=604800):
     return dt
 
 
-deq = glonass_deq
-glorbit = glonass_glorbit
+def deq(x, acc):
+    xdot = np.zeros(6)
+
+    r2 = x[0:3]@x[0:3]
+    r3 = r2*np.sqrt(r2)
+    omg2 = rCST.OMGE_GLO**2
+
+    if r2 <= 0.0:
+        return xdot
+
+    a = 1.5*rCST.J2_GLO*rCST.MU_GLO*rCST.RE_GLO**2/r2/r3
+    b = 5.0*x[2]**2/r2
+    c = -rCST.MU_GLO/r3-a*(1.0-b)
+
+    xdot[0:3] = x[3:6]
+    xdot[3] = (c+omg2)*x[0]+2.0*rCST.OMGE_GLO*x[4]
+    xdot[4] = (c+omg2)*x[1]-2.0*rCST.OMGE_GLO*x[3]
+    xdot[5] = (c-2.0*a)*x[2]
+    xdot[3:6] += acc
+    return xdot
 
 
-def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=30.0):
+def glorbit(t, x, acc):
+    k1 = deq(x, acc)
+    w = x + k1*t/2.0
+    k2 = deq(w, acc)
+    w = x + k2*t/2.0
+    k3 = deq(w, acc)
+    w = x + k3*t
+    k4 = deq(w, acc)
+    x += (k1+2.0*k2+2.0*k3+k4)*t/6.0
+    return x
+
+
+def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=1.0):
     """ calculate GLONASS satellite position based on ephemeris """
-    dt = timediff(time, geph.toe)
-    pos, vel, dts = glonass_propagate(
-        dt,
-        np.asarray(geph.pos, dtype=np.float64),
-        np.asarray(geph.vel, dtype=np.float64),
-        np.asarray(geph.acc, dtype=np.float64),
-        float(geph.taun),
-        float(geph.gamn),
-        step=float(TSTEP),
-    )
+    t = timediff(time, geph.toe)
+    dts = -geph.taun+geph.gamn*t
+    x = np.zeros(6)
+    x[0:3] = geph.pos
+    x[3:6] = geph.vel
+
+    tt = -TSTEP if t < 0.0 else TSTEP
+
+    while True:
+        if np.fabs(t) <= 1e-9:
+            break
+        if np.fabs(t) < TSTEP:
+            tt = t
+        x = glorbit(tt, x, geph.acc)
+        t -= tt
+
+    rs = x[0:3]
+    vs = x[3:6]
+
     if flg_v:
-        return pos, vel, dts
-    return pos, dts
+        return rs, vs, dts
+    else:
+        return rs, dts
 
 
 def geph2clk(time: gtime_t, geph: Geph):
@@ -199,47 +159,76 @@ def eph2pos(t: gtime_t, eph: Eph, flg_v=False):
     sys, prn = sat2prn(eph.sat)
     mu, omge = sys2MuOmega(sys)
     dt = dtadjust(t, eph.toe)
-    A = float(eph.A)
-    n0 = np.sqrt(mu/A**3)
-    dna = float(eph.deln)
-    Ak = A
+    n0 = np.sqrt(mu/eph.A**3)
+    dna = eph.deln
+    Ak = eph.A
     if eph.mode > 0:
-        dna += 0.5*dt*float(getattr(eph, 'delnd', 0.0))
-        Ak += dt*float(getattr(eph, 'Adot', 0.0))
+        dna += 0.5*dt*eph.delnd
+        Ak += dt*eph.Adot
     n = n0+dna
-    M = float(eph.M0)+n*dt
+    M = eph.M0+n*dt
+    E, sE = eccentricAnomaly(M, eph.e)
+    cE = np.cos(E)
     dtc = dtadjust(t, eph.toc)
-    is_bds_geo = 1 if (sys == uGNSS.BDS and (prn <= 5 or prn >= 59)) else 0
-    sqrt_mu_A = np.sqrt(mu*A)
-    rs, vs, dts = broadcast_orbit(
-        float(dt),
-        float(dtc),
-        float(n),
-        float(Ak),
-        float(M),
-        float(eph.e),
-        float(eph.omg),
-        float(eph.cuc),
-        float(eph.cus),
-        float(eph.crc),
-        float(eph.crs),
-        float(eph.cic),
-        float(eph.cis),
-        float(eph.i0),
-        float(eph.idot),
-        float(eph.OMG0),
-        float(eph.OMGd),
-        float(omge),
-        float(getattr(eph, 'toes', 0.0)),
-        is_bds_geo,
-        float(sqrt_mu_A),
-        float(eph.af0),
-        float(eph.af1),
-        float(eph.af2),
-        1 if flg_v else 0,
-    )
-    if flg_v:
+    dtrel = -2.0*np.sqrt(mu*eph.A)*eph.e*sE/rCST.CLIGHT**2
+    dts = eph.af0+eph.af1*dtc+eph.af2*dtc**2 + dtrel
+
+    nus = np.sqrt(1.0-eph.e**2)*sE
+    nuc = cE-eph.e
+    nue = 1.0-eph.e*cE
+
+    nu = np.arctan2(nus, nuc)
+    phi = nu+eph.omg
+    h2 = np.array([np.cos(2.0*phi), np.sin(2.0*phi)])
+    u = phi+np.array([eph.cuc, eph.cus])@h2
+    r = Ak*nue+np.array([eph.crc, eph.crs])@h2
+    h = np.array([np.cos(u), np.sin(u)])
+    xo = r*h
+
+    inc = eph.i0+eph.idot*dt+np.array([eph.cic, eph.cis])@h2
+    si = np.sin(inc)
+    ci = np.cos(inc)
+
+    if sys == uGNSS.BDS and (prn <= 5 or prn >= 59):  # BDS GEO
+        Omg = eph.OMG0+eph.OMGd*dt-omge*eph.toes
+        sOmg = np.sin(Omg)
+        cOmg = np.cos(Omg)
+        p = np.array([cOmg, sOmg, 0])
+        q = np.array([-ci*sOmg, ci*cOmg, si])
+        rg = xo@np.array([p, q])
+        so = np.sin(omge*dt)
+        co = np.cos(omge*dt)
+        Mo = np.array([[co, so*rCST.COS_5, so*rCST.SIN_5],
+                       [-so, co*rCST.COS_5, co*rCST.SIN_5],
+                       [0.0,   -rCST.SIN_5,    rCST.COS_5]])
+        rs = Mo@rg
+    else:
+        Omg = eph.OMG0+eph.OMGd*dt-omge*(eph.toes+dt)
+        sOmg = np.sin(Omg)
+        cOmg = np.cos(Omg)
+        p = np.array([cOmg, sOmg, 0])
+        q = np.array([-ci*sOmg, ci*cOmg, si])
+        rs = xo@np.array([p, q])
+
+    if flg_v:  # satellite velocity
+        qq = np.array([si*sOmg, -si*cOmg, ci])
+        Ed = n/nue
+        nud = np.sqrt(1.0-eph.e**2)/nue*Ed
+        h2d = 2.0*nud*np.array([-h[1], h[0]])
+        ud = nud+np.array([eph.cuc, eph.cus])@h2d
+        rd = Ak*eph.e*sE*Ed+np.array([eph.crc, eph.crs])@h2d
+
+        hd = np.array([-h[1], h[0]])
+        xod = rd*h+(r*ud)*hd
+        incd = eph.idot+np.array([eph.cic, eph.cis])@h2d
+        omegd = eph.OMGd-omge
+
+        pd = np.array([-p[1], p[0], 0])*omegd
+        qd = np.array([-q[1], q[0], 0])*omegd+qq*incd
+
+        vs = xo@np.array([pd, qd])+xod@np.array([p, q])
         return rs, vs, dts
+
     return rs, dts
 
 
@@ -269,28 +258,265 @@ def eph2rel(time, eph):
     return -2.0*np.sqrt(mu*eph.A)*eph.e*sE/rCST.CLIGHT**2
 
 
-def satposs(obs, nav, cs=None, orb=None):
+def satpos(sat, t, nav, cs=None, orb=None):
     """
-    Calculate pos/vel/clk for observed satellites (broadcast ephemeris).
+    Calculate pos/vel/clk for single satellite
 
-    Positions, velocities and clock offsets are computed at the signal
-    transmission epoch (time-of-flight from the pseudorange). The clock is
-    corrected for relativity and, for single-frequency standalone use, TGD.
+    The satellite position, velocity and clock offset are computed at epoch.
+    The satellite health indicator is extracted from the broadcast navigation
+    message.
 
-    NOTE: SSR-correction (``cs``) and precise-orbit (``orb``) support was
-    removed with the minimal core; both arguments are accepted for
-    signature compatibility but ignored.
+    Parameters
+    ----------
+    sat :
+        satellite ID
+    t   : time_t()
+        epoch
+    nav : Nav()
+        contains coarse satellite orbit and clock offset information
+    cs  : cssr_has()
+        contains precise SSR corrections for satellite orbit and clock offset
+    obs : peph()
+        contains precise satellite orbit and clock offset information
 
     Returns
     -------
-    rs, vs : np.ndarray
-        satellite ECEF position [m] / velocity [m/s]
-    dts : np.ndarray
+    rs  : np.array() of float
+        satellite position in ECEF [m]
+    vs  : np.array() of float
+        satellite velocity in ECEF [m/s]
+    dts : np.array() of float
         satellite clock offset [s]
-    svh : np.ndarray of int
-        satellite health code
+    svh : np.array() of int
+        satellite health code [-]
+    """
+
+    n = 1
+    rs = np.ones((n, 3))*np.nan
+    vs = np.ones((n, 3))*np.nan
+    dts = np.ones(n)*np.nan
+    svh = np.zeros(n, dtype=int)
+    iode = -1
+
+    i = 0
+    sys, _ = sat2prn(sat)
+
+    if nav.ephopt == 4:
+
+        rs_, dts_, _ = orb.peph2pos(t, sat, nav)
+        if rs_ is None or dts_ is None or np.isnan(dts_[0]):
+            return rs, vs, dts, svh
+
+        # Health indicator from BRDC
+        #
+        if sys == uGNSS.GLO and len(nav.geph) > 0:
+
+            geph = findeph(nav.geph, t, sat)
+            if geph is None:
+                svh[i] = 1
+                return rs, vs, dts, svh
+
+            svh[i] = geph.svh
+
+            if sat not in nav.glo_ch:
+                nav.glo_ch[sat] = geph.frq
+
+        elif len(nav.eph) > 0:
+
+            eph = findeph(nav.eph, t, sat)
+            if eph is None:
+                svh[i] = 1
+                return rs, vs, dts, svh
+
+            svh[i] = eph.svh
+
+        else:
+
+            svh[i] = 0
+
+    else:
+
+        if cs is not None:
+
+            if cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr:
+                if sat not in cs.sat_n:
+                    return rs, vs, dts, svh
+            elif cs.iodssr_p >= 0 and \
+                    cs.iodssr_c[sCType.ORBIT] == cs.iodssr_p:
+                if sat not in cs.sat_n_p:
+                    return rs, vs, dts, svh
+            else:
+                return rs, vs, dts, svh
+
+            if sat not in cs.lc[0].iode.keys():
+                return rs, vs, dts, svh
+
+            iode = cs.lc[0].iode[sat]
+            dorb = cs.lc[0].dorb[sat]  # radial,along-track,cross-track
+
+            if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+
+                dorb += cs.lc[0].dvel[sat] * \
+                    (timediff(t, cs.lc[0].t0[sat][sCType.ORBIT]))
+
+            if cs.cssrmode == sc.BDS_PPP:  # consistency check for IOD corr
+
+                if cs.lc[0].iodc[sat] == cs.lc[0].iodc_c[sat]:
+                    dclk = cs.lc[0].dclk[sat]
+                elif cs.lc[0].iodc[sat] == cs.lc[0].iodc_c_p[sat]:
+                    dclk = cs.lc[0].dclk_p[sat]
+                else:
+                    return rs, vs, dts, svh
+
+            else:
+
+                if cs.cssrmode == sc.GAL_HAS_SIS:  # HAS only
+                    if cs.mask_id != cs.mask_id_clk:  # mask has changed
+                        if sat not in cs.sat_n_p:
+                            return rs, vs, dts, svh
+                else:
+                    if cs.iodssr_c[sCType.CLOCK] == cs.iodssr:
+                        if sat not in cs.sat_n:
+                            return rs, vs, dts, svh
+
+                    elif cs.iodssr_c[sCType.CLOCK] == cs.iodssr_p:
+                        if sat not in cs.sat_n_p:
+                            return rs, vs, dts, svh
+                    else:
+                        return rs, vs, dts, svh
+
+                dclk = cs.lc[0].dclk[sat]
+
+                if cs.lc[0].cstat & (1 << sCType.HCLOCK) and \
+                        sat in cs.lc[0].hclk.keys() and \
+                        not np.isnan(cs.lc[0].hclk[sat]):
+                    dclk += cs.lc[0].hclk[sat]
+
+                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                    dclk += cs.lc[0].ddft[sat] * \
+                        (timediff(t, cs.lc[0].t0[sat][sCType.CLOCK]))
+
+            if np.isnan(dclk) or np.isnan(dorb@dorb):
+                return rs, vs, dts, svh
+
+            # Select broadcast navigation type depending on GNSS type
+            #
+            mode = cs.nav_mode[sys]
+
+        else:
+
+            mode = 0
+
+        if sys == uGNSS.GLO:
+
+            geph = findeph(nav.geph, t, sat, iode, mode=mode)
+            if geph is None:
+                svh[i] = 1
+                return rs, vs, dts, svh
+
+            svh[i] = geph.svh
+
+            if sat not in nav.glo_ch:
+                nav.glo_ch[sat] = geph.frq
+
+        else:
+
+            eph = findeph(nav.eph, t, sat, iode, mode=mode)
+            if eph is None:
+                svh[i] = 1
+                return rs, vs, dts, svh
+
+            svh[i] = eph.svh
+
+    if nav.ephopt == 4:  # precise ephemeris
+
+        rs_, dts_, _ = orb.peph2pos(t, sat, nav)
+        rs[i, :] = rs_[0: 3]
+        vs[i, :] = rs_[3: 6]
+        dts[i] = dts_[0] - orb.pephrel(rs_)  # Remove relativistic correction!
+
+    else:
+
+        if sys == uGNSS.GLO:
+            rs[i, :], vs[i, :], dts[i] = geph2pos(t, geph, True)
+            dts[i] -= geph2rel(rs[i, :], vs[i, :])
+        else:
+            rs[i, :], vs[i, :], dts[i] = eph2pos(t, eph, True)
+            dts[i] -= eph2rel(t, eph)
+
+        # Apply SSR correction
+        #
+        if cs is not None:
+
+            if cs.cssrmode == sc.BDS_PPP:
+                er = vnorm(rs[i, :])
+                rc = np.cross(rs[i, :], vs[i, :])
+                ec = vnorm(rc)
+                ea = np.cross(ec, er)
+                A = np.array([er, ea, ec])
+            else:
+                ea = vnorm(vs[i, :])
+                rc = np.cross(rs[i, :], vs[i, :])
+                ec = vnorm(rc)
+                er = np.cross(ea, ec)
+                A = np.array([er, ea, ec])
+
+            if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                dorb_e = dorb
+            else:
+                dorb_e = dorb@A
+
+            rs[i, :] -= dorb_e
+            dts[i] += dclk/rCST.CLIGHT
+
+            if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5,
+                               sc.DGPS) and sys == uGNSS.GPS:
+                dts[i] -= eph.tgd
+
+        elif nav.smode == 1 and nav.nf == 1:  # standalone positioning
+            dts[i] -= eph.tgd
+
+    if cs is not None:
+        if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
+            nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]
+
+    return rs, vs, dts, svh
+
+
+def satposs(obs, nav, cs=None, orb=None):
+    """
+    Calculate pos/vel/clk for observed satellites
+
+    The satellite position, velocity and clock offset are computed at
+    transmission epoch. The signal time-of-flight is computed from
+    a pseudorange measurement corrected by the satellite clock offset,
+    hence the observations are required at this stage. The satellite clock
+    is already corrected for the relativistic effects. The satellite health
+    indicator is extracted from the broadcast navigation message.
+
+    Parameters
+    ----------
+    obs : Obs()
+        contains GNSS measurements
+    nav : Nav()
+        contains coarse satellite orbit and clock offset information
+    cs  : cssr_has()
+        contains precise SSR corrections for satellite orbit and clock offset
+    obs : peph()
+        contains precise satellite orbit and clock offset information
+
+    Returns
+    -------
+    rs  : np.array() of float
+        satellite position in ECEF [m]
+    vs  : np.array() of float
+        satellite velocities in ECEF [m/s]
+    dts : np.array() of float
+        satellite clock offsets [s]
+    svh : np.array() of int
+        satellite health code [-]
     nsat : int
-        number of valid satellites
+        number of effective satellite
     """
 
     n = obs.sat.shape[0]
@@ -298,8 +524,8 @@ def satposs(obs, nav, cs=None, orb=None):
     vs = np.zeros((n, 3))
     dts = np.zeros(n)
     svh = np.zeros(n, dtype=int)
+    iode = -1
     nsat = 0
-    obs_sig_keys = obs.sig.keys()
 
     for i in range(n):
 
@@ -307,43 +533,203 @@ def satposs(obs, nav, cs=None, orb=None):
         sys, _ = sat2prn(sat)
 
         # Skip undesired constellations
-        if sys not in obs_sig_keys:
+        #
+        if sys not in obs.sig.keys():
             continue
 
-        pr = obs.P[i, 0]
+        pr = obs.P[i, 0]  # TODO: catch invalid observation!
         t = timeadd(obs.t, -pr/rCST.CLIGHT)
 
-        if sys == uGNSS.GLO:
-            geph = findeph(nav.geph, t, sat, mode=0)
-            if geph is None:
-                svh[i] = 1
-                continue
-            svh[i] = geph.svh
-            dt = geph2clk(t, geph)
-            if sat not in nav.glo_ch:
-                nav.glo_ch[sat] = geph.frq
-        else:
-            eph = findeph(nav.eph, t, sat, mode=0)
-            if eph is None:
-                svh[i] = 1
-                continue
-            svh[i] = eph.svh
-            dt = eph2clk(t, eph)
+        if nav.ephopt == 4:
 
-        # Re-evaluate at clock-corrected transmission time
+            rs_, dts_, _ = orb.peph2pos(t, sat, nav)
+            if rs_ is None or dts_ is None or np.isnan(dts_[0]):
+                continue
+            dt = dts_[0]
+
+            if sys == uGNSS.GLO and len(nav.geph) > 0:
+                geph = findeph(nav.geph, t, sat)
+                if geph is None:
+                    svh[i] = 1
+                    continue
+                svh[i] = geph.svh
+
+                if sat not in nav.glo_ch:
+                    nav.glo_ch[sat] = geph.frq
+
+            elif len(nav.eph) > 0:
+                eph = findeph(nav.eph, t, sat)
+                if eph is None:
+                    svh[i] = 1
+                    continue
+                svh[i] = eph.svh
+
+            else:
+                svh[i] = 0
+
+        else:
+
+            if cs is not None:
+
+                if cs.iodssr >= 0 and cs.iodssr_c[sCType.ORBIT] == cs.iodssr:
+                    if sat not in cs.sat_n:
+                        continue
+                elif cs.iodssr_p >= 0 and \
+                        cs.iodssr_c[sCType.ORBIT] == cs.iodssr_p:
+                    if sat not in cs.sat_n_p:
+                        continue
+                else:
+                    continue
+
+                if sat not in cs.lc[0].iode.keys():
+                    continue
+
+                iode = cs.lc[0].iode[sat]
+                dorb = cs.lc[0].dorb[sat]  # radial,along-track,cross-track
+
+                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                    dorb += cs.lc[0].dvel[sat] * \
+                        (timediff(obs.t, cs.lc[0].t0[sat][sCType.ORBIT]))
+
+                if cs.cssrmode == sc.BDS_PPP:  # consistency check for IOD corr
+
+                    if cs.lc[0].iodc[sat] == cs.lc[0].iodc_c[sat]:
+                        dclk = cs.lc[0].dclk[sat]
+                    else:
+                        if cs.lc[0].iodc[sat] == cs.lc[0].iodc_c_p[sat]:
+                            dclk = cs.lc[0].dclk_p[sat]
+                        else:
+                            continue
+
+                else:
+
+                    if cs.cssrmode == sc.GAL_HAS_SIS:  # HAS only
+                        if cs.mask_id != cs.mask_id_clk:  # mask has changed
+                            if sat not in cs.sat_n_p:
+                                continue
+                    else:
+                        if cs.iodssr_c[sCType.CLOCK] == cs.iodssr:
+                            if sat not in cs.sat_n:
+                                continue
+                        else:
+                            if cs.iodssr_c[sCType.CLOCK] == cs.iodssr_p:
+                                if sat not in cs.sat_n_p:
+                                    continue
+                            else:
+                                continue
+
+                    if sat in cs.lc[0].dclk:
+                        dclk = cs.lc[0].dclk[sat]
+                    else:
+                        continue
+
+                    if cs.lc[0].cstat & (1 << sCType.HCLOCK) and \
+                            sat in cs.lc[0].hclk.keys() and \
+                            not np.isnan(cs.lc[0].hclk[sat]):
+                        dclk += cs.lc[0].hclk[sat]
+
+                    if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                        dclk += cs.lc[0].ddft[sat] * \
+                            (timediff(obs.t, cs.lc[0].t0[sat][sCType.CLOCK]))
+
+                if np.isnan(dclk) or np.isnan(dorb@dorb):
+                    continue
+
+                mode = cs.nav_mode[sys]
+
+            else:
+
+                mode = 0
+
+            if sys == uGNSS.GLO:
+                geph = findeph(nav.geph, t, sat, iode, mode=mode)
+                if geph is None:
+                    svh[i] = 1
+                    continue
+
+                svh[i] = geph.svh
+                dt = geph2clk(t, geph)
+
+                if sat not in nav.glo_ch:
+                    nav.glo_ch[sat] = geph.frq
+
+            else:
+                eph = findeph(nav.eph, t, sat, iode, mode=mode)
+                if eph is None:
+                    svh[i] = 1
+                    continue
+
+                svh[i] = eph.svh
+                dt = eph2clk(t, eph)
+
         t = timeadd(t, -dt)
 
-        if sys == uGNSS.GLO:
-            rs[i, :], vs[i, :], dts[i] = geph2pos(t, geph, True)
+        if nav.ephopt == 4:  # precise ephemeris
+
+            rs_, dts_, _ = orb.peph2pos(t, sat, nav)
+            rs[i, :] = rs_[0: 3]
+            vs[i, :] = rs_[3: 6]
+            dts[i] = dts_[0]
+            nsat += 1
+
         else:
-            rs[i, :], vs[i, :], dts[i] = eph2pos(t, eph, True)
-            if nav.smode == 1 and nav.nf == 1:  # single-freq standalone
+
+            if sys == uGNSS.GLO:
+                rs[i, :], vs[i, :], dts[i] = geph2pos(t, geph, True)
+            else:
+                rs[i, :], vs[i, :], dts[i] = eph2pos(t, eph, True)
+
+            # Apply SSR correction
+            #
+            if cs is not None:
+
+                if cs.cssrmode == sc.BDS_PPP:
+                    er = vnorm(rs[i, :])
+                    rc = np.cross(rs[i, :], vs[i, :])
+                    ec = vnorm(rc)
+                    ea = np.cross(ec, er)
+                    A = np.array([er, ea, ec])
+                else:
+                    ea = vnorm(vs[i, :])
+                    rc = np.cross(rs[i, :], vs[i, :])
+                    ec = vnorm(rc)
+                    er = np.cross(ea, ec)
+                    A = np.array([er, ea, ec])
+
+                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
+                    dorb_e = dorb
+                else:
+                    dorb_e = dorb@A
+
+                rs[i, :] -= dorb_e
+                dts[i] += dclk/rCST.CLIGHT
+
+                if cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5,
+                                   sc.DGPS) and sys == uGNSS.GPS:
+                    dts[i] -= eph.tgd
+
+                ers = vnorm(rs[i, :]-nav.x[0: 3])
+                dorb_ = -ers@dorb_e
+                sis = dclk-dorb_
+                if cs.lc[0].t0[sat][sCType.ORBIT].time % 30 == 0 and \
+                        timediff(cs.lc[0].t0[sat][sCType.ORBIT], nav.time_p) > 0:
+                    if abs(nav.sis[sat]) > 0:
+                        nav.dsis[sat] = sis - nav.sis[sat]
+                    nav.sis[sat] = sis
+
+                nav.dorb[sat] = dorb_
+                nav.dclk[sat] = dclk
+
+            elif nav.smode == 1 and nav.nf == 1:  # stand-alone positioning
                 dts[i] -= eph.tgd
 
-        nsat += 1
+            nsat += 1
+
+    if cs is not None:
+        if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
+            nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]
 
     return rs, vs, dts, svh, nsat
-
 
 
 def loadXmlAlmanac(fname, sys=uGNSS.GAL):

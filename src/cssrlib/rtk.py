@@ -3,7 +3,7 @@ module for RTK positioning
 
 """
 
-from cssrlib.pppssr import pppos
+from cssrlib.gnssobs import gnssobs
 import numpy as np
 from copy import copy, deepcopy
 from contextlib import contextmanager
@@ -60,7 +60,7 @@ class DDMeasurements(dict):
         self[name] = value
 
 
-class rtkpos(pppos):
+class rtkpos(gnssobs):
     """ class for RTK processing """
 
     def __init__(self, nav, pos0=np.zeros(3), logfile=None, base_nav=None):
@@ -89,6 +89,10 @@ class rtkpos(pppos):
         self.nav.thresar = 2.0  # AR acceptance threshold
         self.nav.armode = 1     # AR is enabled
         self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
+        self.nav.rtklib_mode = False
+        self.nav.excsat = 0        # last excluded satellite (round-robin)
+        self.nav.arfilter = True   # drop newly-acquired sats that hurt ratio
+        self.nav.minfixsats = 4    # minimum sats required to attempt AR
 
         # Solid Earth tides cancel in the rover-base double difference at the
         # short baselines RTK targets, so they are disabled (the tide model
