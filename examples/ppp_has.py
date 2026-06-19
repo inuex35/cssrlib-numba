@@ -5,6 +5,13 @@ E6-B CNAV pages (Reed-Solomon recovered). No regional atmosphere grid, so the
 troposphere and ionosphere are estimated. Uses the unified PPP engine
 (cssrlib.gnssobs) driven by the HAS decoder cssrlib.cssr_has.
 
+Float only: HAS broadcasts phase biases (cssr_has decodes them and zdres
+applies them), so PPP-AR is mechanically supported, but the bundled sample is
+only ~6.5 min of 1 Hz data -- far short of the 20-30 min a global PPP float
+needs to converge. Resolving integers before convergence fixes to the WRONG
+cycles and degrades the solution, so this sample stays float (set nav.armode
+> 0 only with a much longer record).
+
 Data (companion cssrlib-data repo):
   doy2025-233: 233h_rnx.{obs,nav}, 233h_gale6.txt, antex/igs20.atx
   samples/Galileo-HAS-SIS-ICD_1.0_Annex_B_Reed_Solomon_Generator_Matrix.txt
