@@ -104,8 +104,8 @@ print(f"collected {len(frames)} epochs via prepare_ppp_measurements")
 
 # ---- GTSAM float PPP-RTK graph (C++ Undifferenced factors) -----------------
 X = symbol('x', 0)
-ZT = symbol('z', 0)            # ZTD residual [m] (static over the window)
 def CK(ei, si): return symbol('c', ei * 4 + si)
+def ZT(ei): return symbol('z', ei)   # ZTD residual per epoch (random walk)
 def IO(s): return symbol('i', int(s))
 def AM(s, f): return symbol('n', int(s) * 4 + f)
 
@@ -115,21 +115,41 @@ x0 = xyz_ref + np.array([5.0, -4.0, 3.0])
 val.insert(X, gtsam.Point3(*x0))
 graph.add(gtsam.PriorFactorPoint3(X, gtsam.Point3(*x0),
           gtsam.noiseModel.Isotropic.Sigma(3, 30.0)))
-# ZTD residual: CLAS tropo a-priori sigma (median over the run), about 0.
 ztd_sigs = [fr.ztd_sig for fr in frames if np.isfinite(fr.ztd_sig)]
 ztd_sig = float(np.median(ztd_sigs)) if ztd_sigs else 0.1
-val.insert(ZT, 0.0)
-graph.addPriorDouble(ZT, 0.0, gtsam.noiseModel.Isotropic.Sigma(1, ztd_sig))
+
+
+def ztd_rw():
+    def err(this, values, jac):
+        a = values.atDouble(this.keys()[0]); b = values.atDouble(this.keys()[1])
+        if jac is not None:
+            jac[0] = np.array([[1.0]]); jac[1] = np.array([[-1.0]])
+        return np.array([a - b])
+    return err
+
 
 seen_io, seen_am, seen_ck = set(), set(), set()
 for ei, fr in enumerate(frames):
     rr = fr.pos_pred
+    val.insert(ZT(ei), 0.0)
+    if ei == 0:
+        graph.addPriorDouble(ZT(0), 0.0,
+                             gtsam.noiseModel.Isotropic.Sigma(1, ztd_sig))
+    else:
+        graph.add(gtsam.CustomFactor(
+            gtsam.noiseModel.Isotropic.Sigma(1, 0.003),
+            gtsam.KeyVector([ZT(ei), ZT(ei - 1)]), ztd_rw()))
     for i, s in enumerate(fr.sat):
         s = int(s)
         sys = sat2prn(s)[0]
         if sys not in SYSS or fr.el[i] <= 0:
             continue
         if not np.all(np.isfinite(fr.rs[i])) or np.linalg.norm(fr.rs[i]) < 1e6:
+            continue
+        # Require both frequencies (phase+code) so the per-epoch slant iono is
+        # observable from the dual-frequency data (avoids rank deficiency).
+        if not (fr.y[i, 0] != 0 and fr.y[i, 1] != 0
+                and fr.y[i, nf] != 0 and fr.y[i, nf + 1] != 0):
             continue
         geom, _ = cssr_geodist(fr.rs[i], rr)
         s_el = 1.0 / max(np.sin(fr.el[i]), 0.1)
@@ -150,11 +170,11 @@ for ei, fr in enumerate(frames):
             if IO(s) not in seen_io:
                 seen_io.add(IO(s))
                 val.insert(IO(s), 0.0)
-                sig_i = fr.iono_sig[i] if np.isfinite(fr.iono_sig[i]) else 0.3
+                sig_i = min(fr.iono_sig[i] if np.isfinite(fr.iono_sig[i]) else 0.05, 0.01)
                 graph.addPriorDouble(IO(s), 0.0,
                                      gtsam.noiseModel.Isotropic.Sigma(1, sig_i))
             graph.add(gtsam.UndifferencedPseudorangeFactor(
-                X, ck, ZT, IO(s), m_code, gtsam.Point3(*fr.rs[i]),
+                X, ck, ZT(ei), IO(s), m_code, gtsam.Point3(*fr.rs[i]),
                 fr.mapfw[i], mu, 0.0,
                 gtsam.noiseModel.Isotropic.Sigma(1, 0.6 * s_el)))
             ak = AM(s, f)
@@ -162,17 +182,89 @@ for ei, fr in enumerate(frames):
                 seen_am.add(ak)
                 val.insert(ak, float((m_phase - geom - val.atDouble(ck)) / lam))
                 graph.addPriorDouble(ak, val.atDouble(ak),
-                                     gtsam.noiseModel.Isotropic.Sigma(1, 1e3))
+                                     gtsam.noiseModel.Isotropic.Sigma(1, 5.0))
             graph.add(gtsam.UndifferencedCarrierPhaseFactor(
-                X, ck, ZT, IO(s), ak, m_phase, gtsam.Point3(*fr.rs[i]),
+                X, ck, ZT(ei), IO(s), ak, m_phase, gtsam.Point3(*fr.rs[i]),
                 fr.mapfw[i], mu, lam, 0.0,
                 gtsam.noiseModel.Isotropic.Sigma(1, 0.006 * s_el)))
 
 print(f"graph: {graph.size()} factors, {len(seen_am)} ambiguities")
+
+
+def report(tag, r):
+    xh = np.array(r.atPoint3(X))
+    enu = ecef2enu(pos_ref, xh - xyz_ref)
+    print(f"{tag}: E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
+          f"2D={np.hypot(enu[0],enu[1]):.3f}  3D={np.linalg.norm(xh-xyz_ref):.3f} m")
+
+
+print(f"initial 3D err: {np.linalg.norm(x0 - xyz_ref):.3f} m")
 res = gtsam.LevenbergMarquardtOptimizer(
     graph, val, gtsam.LevenbergMarquardtParams()).optimize()
-xh = np.array(res.atPoint3(X))
-enu = ecef2enu(pos_ref, xh - xyz_ref)
-print(f"initial 3D err: {np.linalg.norm(x0 - xyz_ref):.3f} m")
-print(f"PPP-RTK float : E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
-      f"2D={np.hypot(enu[0],enu[1]):.3f}  3D={np.linalg.norm(xh-xyz_ref):.3f} m")
+report("FLOAT  ", res)
+
+# ---- integer AR: cssrlib resamb_lambda on the GTSAM float (+ joint cov) -----
+# Bridge used by tightly-coupled-gnss-imu-fgo: write the GTSAM ambiguity floats
+# and the joint (position + ambiguity) marginal covariance into the cssrlib
+# state, then call resamb_lambda (LAMBDA + ddidx SD + ratio test). This is the
+# AR *algorithm* only -- not the cssrlib EKF.
+nav = ppp.nav
+nav.x[nav.na:] = 0.0
+nav.P[:, :] = 0.0
+nav.vsat[:, :] = 0
+nav.x[0:3] = np.array(res.atPoint3(X))
+
+# last elevation per satellite
+el_by_sat = {}
+for fr in frames:
+    for i, s in enumerate(fr.sat):
+        if fr.el[i] > 0:
+            el_by_sat[int(s)] = fr.el[i]
+
+# (sat, freq) of every ambiguity created in the graph
+amb = []
+for fr in frames:
+    for i, s in enumerate(fr.sat):
+        s = int(s)
+        if sat2prn(s)[0] not in SYSS:
+            continue
+        for fq in range(nf):
+            if AM(s, fq) in seen_am and (s, fq) not in amb:
+                amb.append((s, fq))
+for (s_, fq) in amb:
+    j = ppp.IB(s_, fq, nav.na)
+    nav.x[j] = res.atDouble(AM(s_, fq))
+    nav.vsat[s_ - 1, fq] = 1
+    if s_ in el_by_sat:
+        nav.el[s_ - 1] = el_by_sat[s_]
+
+marg = gtsam.Marginals(graph, res)
+nav.P[0:3, 0:3] = marg.marginalCovariance(X)
+kv = gtsam.KeyVector(); kv.append(X)
+for (s_, fq) in amb:
+    kv.append(AM(s_, fq))
+jm = marg.jointMarginalCovariance(kv)
+for (s_, fq) in amb:
+    j = ppp.IB(s_, fq, nav.na)
+    nav.P[j, j] = jm.at(AM(s_, fq), AM(s_, fq))[0, 0]
+    pxn = jm.at(X, AM(s_, fq))[:, 0]
+    nav.P[0:3, j] = pxn
+    nav.P[j, 0:3] = pxn
+for a in range(len(amb)):
+    s1, f1 = amb[a]; j1 = ppp.IB(s1, f1, nav.na)
+    for b2 in range(a + 1, len(amb)):
+        s2, f2 = amb[b2]; j2 = ppp.IB(s2, f2, nav.na)
+        c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
+        nav.P[j1, j2] = c; nav.P[j2, j1] = c
+
+nav.elmaskar = np.deg2rad(15.0)
+sat_ar = np.array(sorted({s_ for (s_, fq) in amb}))
+nb, xa = ppp.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
+print(f"AR: nb={nb} (fixed SD ambiguities)")
+if nb > 0:
+    xf = np.array(nav.xa[0:3])
+    enu = ecef2enu(pos_ref, xf - xyz_ref)
+    print(f"FIXED  : E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
+          f"2D={np.hypot(enu[0],enu[1]):.3f}  3D={np.linalg.norm(xf-xyz_ref):.3f} m")
+else:
+    print("AR not accepted")
