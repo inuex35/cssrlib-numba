@@ -5,6 +5,10 @@ troposphere and ionosphere are estimated). Uses the unified PPP engine
 (cssrlib.gnssobs) -- the same class RTK/PPP-RTK subclass -- driven by the BDS
 B2b decoder cssrlib.cssr_bds.
 
+Float only: the B2b PPP message carries orbit/clock and code bias but NO phase
+bias (cssr_bds has no pbias decoder), so undifferenced integer ambiguity
+resolution is not possible. Float is the accuracy ceiling for this service.
+
 Data (companion cssrlib-data repo, see examples/ppprtk_clas.py):
   doy2025-233: 233h_rnx.{obs,nav}, 233h_bdsb2b.txt, antex/igs20.atx
 """
