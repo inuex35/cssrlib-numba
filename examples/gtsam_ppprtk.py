@@ -109,12 +109,12 @@ def ZT(ei): return symbol('z', ei)   # ZTD residual per epoch (random walk)
 def IO(s): return symbol('i', int(s))
 def AM(s, f): return symbol('n', int(s) * 4 + f)
 
-graph = gtsam.NonlinearFactorGraph()
-val = gtsam.Values()
+# Incremental ISAM2 (QR): one update per epoch (like gtsam_rtk.py and
+# tightly-coupled-gnss-imu-fgo) instead of a one-shot batch optimization.
+params = gtsam.ISAM2Params()
+params.setFactorization('QR')
+isam = gtsam.ISAM2(params)
 x0 = xyz_ref + np.array([5.0, -4.0, 3.0])
-val.insert(X, gtsam.Point3(*x0))
-graph.add(gtsam.PriorFactorPoint3(X, gtsam.Point3(*x0),
-          gtsam.noiseModel.Isotropic.Sigma(3, 30.0)))
 ztd_sigs = [fr.ztd_sig for fr in frames if np.isfinite(fr.ztd_sig)]
 ztd_sig = float(np.median(ztd_sigs)) if ztd_sigs else 0.1
 
@@ -129,7 +129,14 @@ def ztd_rw():
 
 
 seen_io, seen_am, seen_ck = set(), set(), set()
+nfac = 0
 for ei, fr in enumerate(frames):
+    graph = gtsam.NonlinearFactorGraph()
+    val = gtsam.Values()
+    if ei == 0:
+        val.insert(X, gtsam.Point3(*x0))
+        graph.add(gtsam.PriorFactorPoint3(X, gtsam.Point3(*x0),
+                  gtsam.noiseModel.Isotropic.Sigma(3, 30.0)))
     rr = fr.pos_pred
     val.insert(ZT(ei), 0.0)
     if ei == 0:
@@ -187,8 +194,12 @@ for ei, fr in enumerate(frames):
                 X, ck, ZT(ei), IO(s), ak, m_phase, gtsam.Point3(*fr.rs[i]),
                 fr.mapfw[i], mu, lam, 0.0,
                 gtsam.noiseModel.Isotropic.Sigma(1, 0.006 * s_el)))
+    nfac += graph.size()
+    isam.update(graph, val)
 
-print(f"graph: {graph.size()} factors, {len(seen_am)} ambiguities")
+res = isam.calculateEstimate()
+print(f"updates: {len(frames)} epochs, {nfac} factors, "
+      f"{len(seen_am)} ambiguities")
 
 
 def report(tag, r):
@@ -199,8 +210,6 @@ def report(tag, r):
 
 
 print(f"initial 3D err: {np.linalg.norm(x0 - xyz_ref):.3f} m")
-res = gtsam.LevenbergMarquardtOptimizer(
-    graph, val, gtsam.LevenbergMarquardtParams()).optimize()
 report("FLOAT  ", res)
 
 # ---- integer AR: cssrlib resamb_lambda on the GTSAM float (+ joint cov) -----
@@ -238,16 +247,19 @@ for (s_, fq) in amb:
     if s_ in el_by_sat:
         nav.el[s_ - 1] = el_by_sat[s_]
 
-marg = gtsam.Marginals(graph, res)
-nav.P[0:3, 0:3] = marg.marginalCovariance(X)
-kv = gtsam.KeyVector(); kv.append(X)
+# Covariance from the ISAM2 Bayes tree. The full position+ambiguity joint is
+# ill-conditioned (NaN), so assemble it from the ambiguity-only joint (stable)
+# plus pairwise (X, ambiguity) cross terms, with a non-finite guard.
+nav.P[0:3, 0:3] = isam.marginalCovariance(X)
+kv = gtsam.KeyVector()
 for (s_, fq) in amb:
     kv.append(AM(s_, fq))
-jm = marg.jointMarginalCovariance(kv)
+jm = isam.jointMarginalCovariance(kv)
 for (s_, fq) in amb:
     j = ppp.IB(s_, fq, nav.na)
     nav.P[j, j] = jm.at(AM(s_, fq), AM(s_, fq))[0, 0]
-    pxn = jm.at(X, AM(s_, fq))[:, 0]
+    kvx = gtsam.KeyVector(); kvx.append(X); kvx.append(AM(s_, fq))
+    pxn = isam.jointMarginalCovariance(kvx).at(X, AM(s_, fq))[:, 0]
     nav.P[0:3, j] = pxn
     nav.P[j, 0:3] = pxn
 for a in range(len(amb)):
@@ -256,6 +268,11 @@ for a in range(len(amb)):
         s2, f2 = amb[b2]; j2 = ppp.IB(s2, f2, nav.na)
         c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
         nav.P[j1, j2] = c; nav.P[j2, j1] = c
+bad = ~np.isfinite(nav.P)
+if bad.any():
+    nav.P[bad] = 0.0
+    d = np.where(np.diag(bad))[0]
+    nav.P[d, d] = 1e10
 
 nav.elmaskar = np.deg2rad(15.0)
 sat_ar = np.array(sorted({s_ for (s_, fq) in amb}))
