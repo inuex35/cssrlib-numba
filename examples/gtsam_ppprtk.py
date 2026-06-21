@@ -129,7 +129,68 @@ def ztd_rw():
 
 
 seen_io, seen_am, seen_ck = set(), set(), set()
+
+
+def try_ar(res, fr):
+    """resamb_lambda on the current ISAM2 float (+ joint cov). Covariance from
+    the ambiguity-only joint (stable) + pairwise (X, ambiguity) cross, since the
+    full position+ambiguity joint is ill-conditioned. Returns (nb, fixed_xyz)."""
+    nav = ppp.nav
+    nav.x[nav.na:] = 0.0
+    nav.P[:, :] = 0.0
+    nav.vsat[:, :] = 0
+    nav.x[0:3] = np.array(res.atPoint3(X))
+    el_now = {int(s): fr.el[i] for i, s in enumerate(fr.sat)}
+    amb = [(int(s), f) for s in fr.sat for f in range(nf)
+           if sat2prn(int(s))[0] in SYSS and AM(int(s), f) in seen_am
+           and res.exists(AM(int(s), f))]
+    if len(amb) < 4:
+        return 0, None
+    # PPP convergence gate: unlike RTK (pseudorange pins position directly), at
+    # the first epoch(s) the position is co-estimated with clock/ZTD/iono and is
+    # not yet observable, so a "fix" cannot improve it. Skip AR until the float
+    # position has converged (1-sigma below ~1 m).
+    Ppos = isam.marginalCovariance(X)
+    if np.sqrt(np.trace(Ppos)) > 1.0:
+        return 0, None
+    for (s_, f) in amb:
+        j = ppp.IB(s_, f, nav.na)
+        nav.x[j] = res.atDouble(AM(s_, f))
+        nav.vsat[s_ - 1, f] = 1
+        if s_ in el_now:
+            nav.el[s_ - 1] = el_now[s_]
+    nav.P[0:3, 0:3] = Ppos
+    kv = gtsam.KeyVector()
+    for (s_, f) in amb:
+        kv.append(AM(s_, f))
+    jm = isam.jointMarginalCovariance(kv)
+    for (s_, f) in amb:
+        j = ppp.IB(s_, f, nav.na)
+        nav.P[j, j] = jm.at(AM(s_, f), AM(s_, f))[0, 0]
+        kvx = gtsam.KeyVector(); kvx.append(X); kvx.append(AM(s_, f))
+        pxn = isam.jointMarginalCovariance(kvx).at(X, AM(s_, f))[:, 0]
+        nav.P[0:3, j] = pxn
+        nav.P[j, 0:3] = pxn
+    for a in range(len(amb)):
+        s1, f1 = amb[a]; j1 = ppp.IB(s1, f1, nav.na)
+        for b2 in range(a + 1, len(amb)):
+            s2, f2 = amb[b2]; j2 = ppp.IB(s2, f2, nav.na)
+            c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
+            nav.P[j1, j2] = c; nav.P[j2, j1] = c
+    bad = ~np.isfinite(nav.P)
+    if bad.any():
+        nav.P[bad] = 0.0
+        d = np.where(np.diag(bad))[0]
+        nav.P[d, d] = 1e10
+    nav.elmaskar = np.deg2rad(15.0)
+    sat_ar = np.array(sorted({s_ for (s_, f) in amb}))
+    nb, _ = ppp.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
+    return nb, (np.array(nav.xa[0:3]) if nb > 0 else None)
+
+
 nfac = 0
+first_fix = None
+n_fix = 0
 for ei, fr in enumerate(frames):
     graph = gtsam.NonlinearFactorGraph()
     val = gtsam.Values()
@@ -197,91 +258,18 @@ for ei, fr in enumerate(frames):
     nfac += graph.size()
     isam.update(graph, val)
 
-res = isam.calculateEstimate()
-print(f"updates: {len(frames)} epochs, {nfac} factors, "
-      f"{len(seen_am)} ambiguities")
-
-
-def report(tag, r):
-    xh = np.array(r.atPoint3(X))
+    res = isam.calculateEstimate()
+    nb, xa = try_ar(res, fr)
+    xh = xa if nb > 0 else np.array(res.atPoint3(X))
     enu = ecef2enu(pos_ref, xh - xyz_ref)
-    print(f"{tag}: E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
-          f"2D={np.hypot(enu[0],enu[1]):.3f}  3D={np.linalg.norm(xh-xyz_ref):.3f} m")
+    if nb > 0:
+        n_fix += 1
+        if first_fix is None:
+            first_fix = ei
+    print(f"ep{ei:3d} {'FIX  ' if nb > 0 else 'float'} nb={nb:2d} "
+          f"2D={np.hypot(enu[0], enu[1]):.3f} "
+          f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
 
-
-print(f"initial 3D err: {np.linalg.norm(x0 - xyz_ref):.3f} m")
-report("FLOAT  ", res)
-
-# ---- integer AR: cssrlib resamb_lambda on the GTSAM float (+ joint cov) -----
-# Bridge used by tightly-coupled-gnss-imu-fgo: write the GTSAM ambiguity floats
-# and the joint (position + ambiguity) marginal covariance into the cssrlib
-# state, then call resamb_lambda (LAMBDA + ddidx SD + ratio test). This is the
-# AR *algorithm* only -- not the cssrlib EKF.
-nav = ppp.nav
-nav.x[nav.na:] = 0.0
-nav.P[:, :] = 0.0
-nav.vsat[:, :] = 0
-nav.x[0:3] = np.array(res.atPoint3(X))
-
-# last elevation per satellite
-el_by_sat = {}
-for fr in frames:
-    for i, s in enumerate(fr.sat):
-        if fr.el[i] > 0:
-            el_by_sat[int(s)] = fr.el[i]
-
-# (sat, freq) of every ambiguity created in the graph
-amb = []
-for fr in frames:
-    for i, s in enumerate(fr.sat):
-        s = int(s)
-        if sat2prn(s)[0] not in SYSS:
-            continue
-        for fq in range(nf):
-            if AM(s, fq) in seen_am and (s, fq) not in amb:
-                amb.append((s, fq))
-for (s_, fq) in amb:
-    j = ppp.IB(s_, fq, nav.na)
-    nav.x[j] = res.atDouble(AM(s_, fq))
-    nav.vsat[s_ - 1, fq] = 1
-    if s_ in el_by_sat:
-        nav.el[s_ - 1] = el_by_sat[s_]
-
-# Covariance from the ISAM2 Bayes tree. The full position+ambiguity joint is
-# ill-conditioned (NaN), so assemble it from the ambiguity-only joint (stable)
-# plus pairwise (X, ambiguity) cross terms, with a non-finite guard.
-nav.P[0:3, 0:3] = isam.marginalCovariance(X)
-kv = gtsam.KeyVector()
-for (s_, fq) in amb:
-    kv.append(AM(s_, fq))
-jm = isam.jointMarginalCovariance(kv)
-for (s_, fq) in amb:
-    j = ppp.IB(s_, fq, nav.na)
-    nav.P[j, j] = jm.at(AM(s_, fq), AM(s_, fq))[0, 0]
-    kvx = gtsam.KeyVector(); kvx.append(X); kvx.append(AM(s_, fq))
-    pxn = isam.jointMarginalCovariance(kvx).at(X, AM(s_, fq))[:, 0]
-    nav.P[0:3, j] = pxn
-    nav.P[j, 0:3] = pxn
-for a in range(len(amb)):
-    s1, f1 = amb[a]; j1 = ppp.IB(s1, f1, nav.na)
-    for b2 in range(a + 1, len(amb)):
-        s2, f2 = amb[b2]; j2 = ppp.IB(s2, f2, nav.na)
-        c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
-        nav.P[j1, j2] = c; nav.P[j2, j1] = c
-bad = ~np.isfinite(nav.P)
-if bad.any():
-    nav.P[bad] = 0.0
-    d = np.where(np.diag(bad))[0]
-    nav.P[d, d] = 1e10
-
-nav.elmaskar = np.deg2rad(15.0)
-sat_ar = np.array(sorted({s_ for (s_, fq) in amb}))
-nb, xa = ppp.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
-print(f"AR: nb={nb} (fixed SD ambiguities)")
-if nb > 0:
-    xf = np.array(nav.xa[0:3])
-    enu = ecef2enu(pos_ref, xf - xyz_ref)
-    print(f"FIXED  : E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
-          f"2D={np.hypot(enu[0],enu[1]):.3f}  3D={np.linalg.norm(xf-xyz_ref):.3f} m")
-else:
-    print("AR not accepted")
+print(f"\nupdates: {len(frames)} epochs, {nfac} factors, "
+      f"{len(seen_am)} ambiguities")
+print(f"first fix: epoch {first_fix}   fixed {n_fix}/{len(frames)} epochs")
