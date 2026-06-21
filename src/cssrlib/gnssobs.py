@@ -243,6 +243,18 @@ class gnssobs():
         """ return index of zenith tropospheric delay estimate """
         return na-uGNSS.MAXSAT-1
 
+    @staticmethod
+    def nsig_sys(obs, sys):
+        """Number of frequency slots this constellation actually carries.
+
+        May be < ``nf`` under a mixed-nf configuration (e.g. GPS L1/L2/L5
+        while ``nf=4`` for Galileo E1/E5a/E5b/E6). The unused high slots are
+        zero-padded in the obs arrays and treated as absent observations by
+        the residual/state loops, so the constellations need not share the
+        same signal count.
+        """
+        return len(obs.sig[sys][uTYP.L])
+
     def varerr(self, nav, el, f):
         """ variation of measurement """
         s_el = max(np.sin(el), 0.1*rCST.D2R)
@@ -309,6 +321,9 @@ class gnssobs():
                 if sys_i not in obs.sig.keys():
                     continue
 
+                if f >= self.nsig_sys(obs, sys_i):  # slot not carried (mixed nf)
+                    continue
+
                 # Reset ambiguity estimate
                 #
                 j = self.IB(sat_, f, self.nav.na)
@@ -349,6 +364,9 @@ class gnssobs():
                 # Do not initialize invalid observations
                 #
                 if np.any(self.nav.edt[sat[i]-1, :] > 0):
+                    continue
+
+                if f >= self.nsig_sys(obs, sys[i]):  # slot not carried (mixed nf)
                     continue
 
                 if self.nav.nf > 1 and self.nav.niono > 0:
@@ -563,8 +581,12 @@ class gnssobs():
                 lam = np.array([s.wavelength() for s in sigsCP])
                 frq = np.array([s.frequency() for s in sigsCP])
 
-            cbias = np.zeros(self.nav.nf)
-            pbias = np.zeros(self.nav.nf)
+            # Per-signal arrays span this constellation's signal count (nsf);
+            # the unused high slots of the nf-wide prc/cpc/y rows stay zero
+            # (see nsig_sys).
+            nsf = len(sigsCP)
+            cbias = np.zeros(nsf)
+            pbias = np.zeros(nsf)
 
             if self.nav.ephopt == 4:  # from Bias-SINEX
 
@@ -634,7 +656,7 @@ class gnssobs():
                 idx_l = cs.lc[inet].sat_n.index(sat)
                 iono = np.array([40.3e16/(f*f)*stec[idx_l] for f in frq])
             else:
-                iono = np.zeros(nf)
+                iono = np.zeros(nsf)
 
             # Phase wind-up effect
             #
@@ -647,7 +669,7 @@ class gnssobs():
                 # cycle -> m
                 phw = lam*self.nav.phw[sat-1]
             else:
-                phw = np.zeros(nf)
+                phw = np.zeros(nsf)
 
             # Select APC reference signals
             #
@@ -741,13 +763,14 @@ class gnssobs():
                 continue
 
             # Range correction
+            # (only the nsf valid slots; high slots stay zero for mixed nf)
             #
-            prc[i, :] = trop + antrPR + antsPR + iono - cbias
-            cpc[i, :] = trop + antrCP + antsCP - iono - pbias + phw
+            prc[i, :nsf] = trop + antrPR + antsPR + iono - cbias
+            cpc[i, :nsf] = trop + antrCP + antsCP - iono - pbias + phw
 
             r += relatv - _c*dts[i]
 
-            for f in range(nf):
+            for f in range(nsf):
                 y[i, f] = obs.L[i, f]*lam[f]-(r+cpc[i, f])
                 y[i, f+nf] = obs.P[i, f]-(r+prc[i, f])
 
@@ -823,6 +846,9 @@ class gnssobs():
                 # Select reference satellite with highest elevation
                 #
                 i = idx[np.argmax(el[idx])]
+
+                if (f % nf) >= self.nsig_sys(obs, sys):  # slot not carried
+                    continue
 
                 # Loop over satellites
                 #
@@ -1250,6 +1276,7 @@ class gnssobs():
             #
             _, e = geodist(rs[j, :], rr_)
             _, el = satazel(pos, e)
+            self.nav.el[sat_i - 1] = el  # persist for weighting / AR elev mask
             if el < self.nav.elmin:
                 self.nav.edt[i][:] = 1
                 if self.nav.monlevel > 0:
@@ -1268,6 +1295,13 @@ class gnssobs():
             # Loop over signals
             #
             for f in range(self.nav.nf):
+
+                # Slot not carried by this constellation (mixed nf): treat as
+                # absent. Do NOT set edt -- the downstream
+                # "np.any(edt[sat,:]>0)" check would otherwise drop the whole
+                # satellite (the padded slot is never observed).
+                if f >= len(sigsCP):
+                    continue
 
                 # Cycle  slip check by LLI
                 #

@@ -1,33 +1,36 @@
-"""GTSAM double-difference RTK using cssrlib as the observation front-end.
+"""GTSAM double-difference RTK with integer ambiguity resolution.
 
 Architecture (gtsam-first), the DD counterpart of examples/gtsam_ppprtk.py:
   cssrlib -> rtkpos.prepare_double_difference_measurements(obs, obsb):
-             rover/base satellite states, common-satellite indices and
-             elevations. No EKF.
-  GTSAM   -> DoubleDifferencePseudorangeFactor / DoubleDifferenceCarrierPhaseFactor
-             (C++, from the inuex35/gtsam fork) form the rover-base double
-             difference internally (Sagnac-corrected geodist) and estimate a
-             single static rover position + per-satellite float ambiguities,
-             updated incrementally with ISAM2.
+             rover/base satellite states, common-satellite indices, elevations.
+  GTSAM   -> DoubleDifference{Pseudorange,CarrierPhase}Factor (C++, inuex35/gtsam
+             fork) form the rover-base double difference internally
+             (Sagnac-corrected geodist) for a single static rover position +
+             per-satellite, per-frequency float ambiguities. Batch LM.
+  AR      -> the float (between-receiver SD) ambiguities + their joint marginal
+             covariance (incl. position cross-covariance) are written into the
+             cssrlib state and resolved with resamb_lambda (LAMBDA + ddidx SD +
+             ratio test) -- the AR *algorithm* only, not the cssrlib EKF.
 
-Static rover, single frequency (L1/E1), float ambiguities. Runs on the data
-bundled with cssrlib (src/cssrlib/data) and the custom gtsam build.
+All available frequencies are used (GPS L1/L2, Galileo E1/E5a). Static rover.
+Runs on the data bundled with cssrlib (src/cssrlib/data).
 """
 import os
 import numpy as np
 
 import cssrlib.rinex as rn
 import cssrlib.gnss as gn
-from cssrlib.gnss import rSigRnx, uTYP, sat2prn
+from cssrlib.gnss import rSigRnx, uTYP, sat2prn, ecef2pos
 from cssrlib.rtk import rtkpos
 import gtsam
 from gtsam import symbol
 
-X = symbol('x', 0)
+X = symbol('x', 0)                       # static rover ECEF position
+SYSS = (gn.uGNSS.GPS, gn.uGNSS.GAL)
 
 
-def _amb(sat, gen):
-    return symbol('n', sat * 100 + gen)
+def AM(sat, f):                          # between-receiver SD ambiguity node
+    return symbol('n', int(sat) * 10 + f)
 
 
 def main():
@@ -59,16 +62,11 @@ def main():
     nav.rb = [-3959400.631, 3385704.533, 3667523.111]
     rb = np.array(nav.rb)
     rtk = rtkpos(nav, dec.pos)
+    nav.x[0:3] = np.array(dec.pos)   # seed position so qcedit computes elevations
+    nf = nav.nf
 
-    isam = gtsam.ISAM2()
-    g0 = gtsam.NonlinearFactorGraph()
-    v0 = gtsam.Values()
-    v0.insert(X, gtsam.Point3(*dec.pos))
-    g0.add(gtsam.PriorFactorPoint3(
-        X, gtsam.Point3(*dec.pos), gtsam.noiseModel.Isotropic.Sigma(3, 30.0)))
-    isam.update(g0, v0)
-
-    ref_sat, amb_gen, have_n = {}, {}, set()
+    # ---- collect per-epoch DD measurements (front-end) ----------------------
+    frames = []
     sync = rn.sync_obs_hold(dec, decb, maxage=nav.maxtdiff)
     nep = 60
     for ne, (obs, obsb, dt) in enumerate(sync):
@@ -76,90 +74,185 @@ def main():
             break
         if obsb is None:
             continue
-        rr_est = isam.calculateEstimate().atPoint3(X)
         dd = rtk.prepare_double_difference_measurements(obs, obsb,
-                                                        pos_pred=rr_est)
-        if dd is None:
-            continue
+                                                        pos_pred=dec.pos)
+        if dd is not None:
+            frames.append((obs, obsb, dd))
+    print(f"frames: {len(frames)}")
+
+    # ---- per-system reference satellite = max cumulative elevation ----------
+    el_cum = {}
+    for (_, _, dd) in frames:
+        for k, s in enumerate(dd.sat):
+            if dd.el[k] > 0:
+                el_cum[int(s)] = el_cum.get(int(s), 0.0) + dd.el[k]
+    ref_of = {}
+    for s, e in el_cum.items():
+        sys = sat2prn(s)[0]
+        if sys in SYSS and (sys not in ref_of or e > el_cum[ref_of[sys]]):
+            ref_of[sys] = s
+
+    # ---- incremental ISAM2 (QR): one update per epoch, like ------------------
+    # tightly-coupled-gnss-imu-fgo. The incrementally-built Bayes tree is
+    # better conditioned than a one-shot batch and its jointMarginalCovariance
+    # is robust.
+    params = gtsam.ISAM2Params()
+    params.setFactorization('QR')
+    isam = gtsam.ISAM2(params)
+    seen_am, pinned = set(), set()
+
+    def report(tag, xh):
+        enu = gn.ecef2enu(pos_ref, xh - xyz_ref)
+        print(f"{tag}: E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
+              f"2D={np.hypot(enu[0], enu[1]):.3f}  "
+              f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
+
+    def try_ar(res, dd):
+        """cssrlib resamb_lambda on the current ISAM2 float (+ joint cov).
+        Returns (nb, fixed_xyz). Covariance bridge: ambiguity-only joint
+        (stable) + pairwise (X, ambiguity) cross (the full position+ambiguity
+        joint is ill-conditioned -> NaN here)."""
+        nav.x[nav.na:] = 0.0
+        nav.P[:, :] = 0.0
+        nav.vsat[:, :] = 0
+        nav.x[0:3] = np.array(res.atPoint3(X))
+        el_now = {int(s): dd.el[k] for k, s in enumerate(dd.sat)}
+        amb = [(int(s), f) for s in dd.sat for f in range(nf)
+               if sat2prn(int(s))[0] in SYSS and AM(int(s), f) in seen_am
+               and res.exists(AM(int(s), f))]
+        if len(amb) < 4:
+            return 0, None
+        for (s_, f) in amb:
+            j = rtk.IB(s_, f, nav.na)
+            nav.x[j] = res.atDouble(AM(s_, f))
+            nav.vsat[s_ - 1, f] = 1
+            if s_ in el_now:
+                nav.el[s_ - 1] = el_now[s_]
+        nav.P[0:3, 0:3] = isam.marginalCovariance(X)
+        kv = gtsam.KeyVector()
+        for (s_, f) in amb:
+            kv.append(AM(s_, f))
+        jm = isam.jointMarginalCovariance(kv)
+        for (s_, f) in amb:
+            j = rtk.IB(s_, f, nav.na)
+            nav.P[j, j] = jm.at(AM(s_, f), AM(s_, f))[0, 0]
+            kvx = gtsam.KeyVector()
+            kvx.append(X)
+            kvx.append(AM(s_, f))
+            pxn = isam.jointMarginalCovariance(kvx).at(X, AM(s_, f))[:, 0]
+            nav.P[0:3, j] = pxn
+            nav.P[j, 0:3] = pxn
+        for a in range(len(amb)):
+            s1, f1 = amb[a]
+            j1 = rtk.IB(s1, f1, nav.na)
+            for b in range(a + 1, len(amb)):
+                s2, f2 = amb[b]
+                j2 = rtk.IB(s2, f2, nav.na)
+                c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
+                nav.P[j1, j2] = c
+                nav.P[j2, j1] = c
+        bad = ~np.isfinite(nav.P)
+        if bad.any():
+            nav.P[bad] = 0.0
+            d = np.where(np.diag(bad))[0]
+            nav.P[d, d] = 1e10
+        nav.elmaskar = np.deg2rad(15.0)
+        sat_ar = np.array(sorted({s_ for (s_, f) in amb}))
+        nb, _ = rtk.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
+        return nb, (np.array(nav.xa[0:3]) if nb > 0 else None)
+
+    nfac = 0
+    first_fix = None
+    n_fix = 0
+    for ei, (obs, obsb, dd) in enumerate(frames):
         graph = gtsam.NonlinearFactorGraph()
-        values = gtsam.Values()
+        val = gtsam.Values()
+        if ei == 0:
+            val.insert(X, gtsam.Point3(*dec.pos))
+            graph.add(gtsam.PriorFactorPoint3(
+                X, gtsam.Point3(*dec.pos),
+                gtsam.noiseModel.Isotropic.Sigma(3, 30.0)))
+
+        def ensure_amb(sat, f, init):
+            if AM(sat, f) not in seen_am:
+                val.insert(AM(sat, f), float(init))
+                seen_am.add(AM(sat, f))
 
         by_sys = {}
-        for k, sat in enumerate(dd.sat):
-            if obs.P[dd.iu[k], 0] == 0 or obsb.P[dd.ir[k], 0] == 0 \
-               or obs.L[dd.iu[k], 0] == 0 or obsb.L[dd.ir[k], 0] == 0:
-                continue
-            by_sys.setdefault(sat2prn(int(sat))[0], []).append(k)
-
+        for k, s in enumerate(dd.sat):
+            by_sys.setdefault(sat2prn(int(s))[0], []).append(k)
         for sys, ks in by_sys.items():
-            if len(ks) < 2:
-                continue
-            lam = obs.sig[sys][uTYP.L][0].wavelength()
-            ref = ref_sat.get(sys)
+            ref = ref_of.get(sys)
             ridx = next((k for k in ks if int(dd.sat[k]) == ref), None)
             if ridx is None:
-                ridx = max(ks, key=lambda k: dd.el[k])
-                ref = int(dd.sat[ridx])
-                ref_sat[sys] = ref
-                for k in ks:
-                    amb_gen[int(dd.sat[k])] = amb_gen.get(int(dd.sat[k]), 0) + 1
-
-            rs_ref = dd.rs[dd.iu[ridx], :3]
-            rsb_ref = dd.rsb[dd.ir[ridx], :3]
-            pr_rr, pr_br = obs.P[dd.iu[ridx], 0], obsb.P[dd.ir[ridx], 0]
-            cp_rr = obs.L[dd.iu[ridx], 0]*lam
-            cp_br = obsb.L[dd.ir[ridx], 0]*lam
-            for k in ks:
-                if k == ridx:
+                continue
+            for f in range(nf):
+                lam = obs.sig[sys][uTYP.L][f].wavelength()
+                pr_rr, pr_br = obs.P[dd.iu[ridx], f], obsb.P[dd.ir[ridx], f]
+                cp_rr = obs.L[dd.iu[ridx], f] * lam
+                cp_br = obsb.L[dd.ir[ridx], f] * lam
+                if 0.0 in (pr_rr, pr_br, cp_rr, cp_br):
                     continue
-                js = int(dd.sat[k])
-                rs_j = dd.rs[dd.iu[k], :3]
-                rsb_j = dd.rsb[dd.ir[k], :3]
-                s = 1.0/max(np.sin(min(dd.el[k], dd.el[ridx])), 0.1)
-
-                graph.add(gtsam.DoubleDifferencePseudorangeFactor(
-                    X, pr_rr, pr_br, obs.P[dd.iu[k], 0], obsb.P[dd.ir[k], 0],
-                    gtsam.Point3(*rs_ref), gtsam.Point3(*rs_j),
-                    gtsam.Point3(*rsb_ref), gtsam.Point3(*rsb_j),
-                    gtsam.Point3(*rb),
-                    gtsam.noiseModel.Isotropic.Sigma(1, 0.3*s)))
-
-                gen = amb_gen.get(js, 0)
-                gref = amb_gen.get(ref, 0)
-                kref, kj = _amb(ref, gref), _amb(js, gen)
-                # Reference ambiguity is the per-system datum: pin it (gauge).
-                if kref not in have_n:
-                    values.insert(kref, 0.0)
+                rs_ref = dd.rs[dd.iu[ridx], :3]
+                rsb_ref = dd.rsb[dd.ir[ridx], :3]
+                # Between-receiver SD ambiguities (cycles): gauge is the
+                # reference SD, pinned to its carrier-minus-code value. Any
+                # value fixes the rank deficiency (DDs are gauge-independent)
+                # and keeps nav.x[IB] non-zero so resamb_lambda's ddidx (which
+                # skips x==0) can use the reference as the pivot.
+                sd_ref = ((cp_rr - cp_br) - (pr_rr - pr_br)) / lam
+                ensure_amb(ref, f, sd_ref)
+                if (ref, f) not in pinned:
                     graph.addPriorDouble(
-                        kref, 0.0, gtsam.noiseModel.Isotropic.Sigma(1, 1e-3))
-                    have_n.add(kref)
-                # Target ambiguity: init from the DD carrier-minus-code.
-                if kj not in have_n:
-                    dd_pr = (pr_rr - pr_br) - (obs.P[dd.iu[k], 0]
-                                               - obsb.P[dd.ir[k], 0])
-                    dd_cp = (cp_rr - cp_br) - (obs.L[dd.iu[k], 0]*lam
-                                              - obsb.L[dd.ir[k], 0]*lam)
-                    values.insert(kj, float((dd_cp - dd_pr)/lam))
-                    graph.addPriorDouble(
-                        kj, float((dd_cp - dd_pr)/lam),
-                        gtsam.noiseModel.Isotropic.Sigma(1, 1e2))
-                    have_n.add(kj)
-                graph.add(gtsam.DoubleDifferenceCarrierPhaseFactor(
-                    X, kref, kj, cp_rr, cp_br,
-                    obs.L[dd.iu[k], 0]*lam, obsb.L[dd.ir[k], 0]*lam,
-                    gtsam.Point3(*rs_ref), gtsam.Point3(*rs_j),
-                    gtsam.Point3(*rsb_ref), gtsam.Point3(*rsb_j),
-                    gtsam.Point3(*rb), lam,
-                    gtsam.noiseModel.Isotropic.Sigma(1, 0.01*s)))
+                        AM(ref, f), sd_ref,
+                        gtsam.noiseModel.Isotropic.Sigma(1, 0.5))
+                    pinned.add((ref, f))
+                for k in ks:
+                    js = int(dd.sat[k])
+                    if k == ridx:
+                        continue
+                    pr_tr, pr_tb = obs.P[dd.iu[k], f], obsb.P[dd.ir[k], f]
+                    cp_tr = obs.L[dd.iu[k], f] * lam
+                    cp_tb = obsb.L[dd.ir[k], f] * lam
+                    if 0.0 in (pr_tr, pr_tb, cp_tr, cp_tb):
+                        continue
+                    rs_j = dd.rs[dd.iu[k], :3]
+                    rsb_j = dd.rsb[dd.ir[k], :3]
+                    s = 1.0 / max(np.sin(min(dd.el[k], dd.el[ridx])), 0.1)
 
-        if graph.size() == 0:
-            continue
-        isam.update(graph, values)
-        rr = isam.calculateEstimate().atPoint3(X)
-        enu = gn.ecef2enu(pos_ref, np.array(rr) - xyz_ref)
-        print("ep {:2d}  nsat={:2d}  ENU [m]: E{:+.3f} N{:+.3f} U{:+.3f}  "
-              "|h|={:.3f}".format(ne, len(dd.sat), enu[0], enu[1], enu[2],
-                                  np.hypot(enu[0], enu[1])))
+                    graph.add(gtsam.DoubleDifferencePseudorangeFactor(
+                        X, pr_rr, pr_br, pr_tr, pr_tb,
+                        gtsam.Point3(*rs_ref), gtsam.Point3(*rs_j),
+                        gtsam.Point3(*rsb_ref), gtsam.Point3(*rsb_j),
+                        gtsam.Point3(*rb),
+                        gtsam.noiseModel.Isotropic.Sigma(1, 0.3 * s)))
+
+                    sd_tgt = ((cp_tr - cp_tb) - (pr_tr - pr_tb)) / lam
+                    ensure_amb(js, f, sd_tgt)
+                    graph.add(gtsam.DoubleDifferenceCarrierPhaseFactor(
+                        X, AM(ref, f), AM(js, f), cp_rr, cp_br, cp_tr, cp_tb,
+                        gtsam.Point3(*rs_ref), gtsam.Point3(*rs_j),
+                        gtsam.Point3(*rsb_ref), gtsam.Point3(*rsb_j),
+                        gtsam.Point3(*rb), lam,
+                        gtsam.noiseModel.Isotropic.Sigma(1, 0.01 * s)))
+        nfac += graph.size()
+        isam.update(graph, val)
+
+        res = isam.calculateEstimate()
+        nb, xa = try_ar(res, dd)
+        xh = xa if nb > 0 else np.array(res.atPoint3(X))
+        enu = gn.ecef2enu(pos_ref, xh - xyz_ref)
+        mode = 'FIX  ' if nb > 0 else 'float'
+        if nb > 0:
+            n_fix += 1
+            if first_fix is None:
+                first_fix = ei
+        print(f"ep{ei:3d} {mode} nb={nb:2d} 2D={np.hypot(enu[0], enu[1]):.3f} "
+              f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
+
+    print(f"\nupdates: {len(frames)} epochs, {nfac} factors, "
+          f"{len(seen_am)} ambiguities")
+    print(f"first fix: epoch {first_fix}   fixed {n_fix}/{len(frames)} epochs")
 
 
 if __name__ == "__main__":
