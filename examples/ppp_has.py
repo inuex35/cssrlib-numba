@@ -5,12 +5,17 @@ E6-B CNAV pages (Reed-Solomon recovered). No regional atmosphere grid, so the
 troposphere and ionosphere are estimated. Uses the unified PPP engine
 (cssrlib.gnssobs) driven by the HAS decoder cssrlib.cssr_has.
 
-Float only: HAS broadcasts phase biases (cssr_has decodes them and zdres
-applies them), so PPP-AR is mechanically supported, but the bundled sample is
-only ~6.5 min of 1 Hz data -- far short of the 20-30 min a global PPP float
-needs to converge. Resolving integers before convergence fixes to the WRONG
-cycles and degrades the solution, so this sample stays float (set nav.armode
-> 0 only with a much longer record).
+Multi-frequency: GPS on L1/L2 (HAS corrects L1/L2 only -- no L5 bias) plus
+Galileo on E1/E5a/E5b/E6 (HAS corrects all four). The unified engine supports
+this mixed signal count per constellation (nf=4 for Galileo, GPS uses its two
+slots; see gnssobs.nsig_sys).
+
+Ambiguity resolution is gated on the actual correction stream: PPP-AR needs
+satellite phase biases (HAS subtype PBIAS). When the decoded corrections carry
+phase biases the cascade-capable LAMBDA AR is enabled automatically; otherwise
+the solution stays float. NOTE the bundled 233h_gale6.txt carries only
+orbit/clock + code bias (no PBIAS at all), so it runs float here -- a longer,
+PBIAS-carrying record is required for HAS PPP-AR.
 
 Data (companion cssrlib-data repo):
   doy2025-233: 233h_rnx.{obs,nav}, 233h_gale6.txt, antex/igs20.atx
@@ -43,17 +48,20 @@ file_has = bdir + f'{doy:03d}{let}_gale6.txt'
 file_gm = f'{DATADIR}/../samples/' \
           'Galileo-HAS-SIS-ICD_1.0_Annex_B_Reed_Solomon_Generator_Matrix.txt'
 
-sigs = [rSigRnx("GC1C"), rSigRnx("GC2L"), rSigRnx("GL1C"), rSigRnx("GL2L"),
+# GPS L1/L2 (HAS corrects L1/L2 only) + Galileo E1/E5a/E5b/E6 (mixed nf=4).
+sigs = [rSigRnx("GC1C"), rSigRnx("GC2L"),
+        rSigRnx("GL1C"), rSigRnx("GL2L"),
         rSigRnx("GS1C"), rSigRnx("GS2L"),
-        rSigRnx("EC1C"), rSigRnx("EC5Q"), rSigRnx("EL1C"), rSigRnx("EL5Q"),
-        rSigRnx("ES1C"), rSigRnx("ES5Q")]
+        rSigRnx("EC1C"), rSigRnx("EC5Q"), rSigRnx("EC7Q"), rSigRnx("EC6C"),
+        rSigRnx("EL1C"), rSigRnx("EL5Q"), rSigRnx("EL7Q"), rSigRnx("EL6C"),
+        rSigRnx("ES1C"), rSigRnx("ES5Q"), rSigRnx("ES7Q"), rSigRnx("ES6C")]
 
 cnav = cnav_msg()
 cnav.load_gmat(file_gm)
 
 rnx = rnxdec()
 rnx.setSignals(sigs)
-nav = Nav()
+nav = Nav(nf=4)
 nav.pmode = 0
 nav = rnx.decode_nav(bdir + f'{doy:03d}{let}_rnx.nav', nav)
 v = np.genfromtxt(file_has, dtype=[('wn', 'int'), ('tow', 'int'),
