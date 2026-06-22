@@ -29,6 +29,8 @@ from cssrlib.rinex import rnxdec
 import gtsam
 from gtsam import symbol
 
+from gnss_ar import resolve_ar
+
 CLIGHT = 299792458.0
 DATADIR = os.environ.get(
     'CSSRLIB_DATA',
@@ -130,64 +132,6 @@ def ztd_rw():
 
 seen_io, seen_am, seen_ck = set(), set(), set()
 
-
-def try_ar(res, fr):
-    """resamb_lambda on the current ISAM2 float (+ joint cov). Covariance from
-    the ambiguity-only joint (stable) + pairwise (X, ambiguity) cross, since the
-    full position+ambiguity joint is ill-conditioned. Returns (nb, fixed_xyz)."""
-    nav = ppp.nav
-    nav.x[nav.na:] = 0.0
-    nav.P[:, :] = 0.0
-    nav.vsat[:, :] = 0
-    nav.x[0:3] = np.array(res.atPoint3(X))
-    el_now = {int(s): fr.el[i] for i, s in enumerate(fr.sat)}
-    amb = [(int(s), f) for s in fr.sat for f in range(nf)
-           if sat2prn(int(s))[0] in SYSS and AM(int(s), f) in seen_am
-           and res.exists(AM(int(s), f))]
-    if len(amb) < 4:
-        return 0, None
-    # PPP convergence gate: unlike RTK (pseudorange pins position directly), at
-    # the first epoch(s) the position is co-estimated with clock/ZTD/iono and is
-    # not yet observable, so a "fix" cannot improve it. Skip AR until the float
-    # position has converged (1-sigma below ~1 m).
-    Ppos = isam.marginalCovariance(X)
-    if np.sqrt(np.trace(Ppos)) > 1.0:
-        return 0, None
-    for (s_, f) in amb:
-        j = ppp.IB(s_, f, nav.na)
-        nav.x[j] = res.atDouble(AM(s_, f))
-        nav.vsat[s_ - 1, f] = 1
-        if s_ in el_now:
-            nav.el[s_ - 1] = el_now[s_]
-    nav.P[0:3, 0:3] = Ppos
-    kv = gtsam.KeyVector()
-    for (s_, f) in amb:
-        kv.append(AM(s_, f))
-    jm = isam.jointMarginalCovariance(kv)
-    for (s_, f) in amb:
-        j = ppp.IB(s_, f, nav.na)
-        nav.P[j, j] = jm.at(AM(s_, f), AM(s_, f))[0, 0]
-        kvx = gtsam.KeyVector(); kvx.append(X); kvx.append(AM(s_, f))
-        pxn = isam.jointMarginalCovariance(kvx).at(X, AM(s_, f))[:, 0]
-        nav.P[0:3, j] = pxn
-        nav.P[j, 0:3] = pxn
-    for a in range(len(amb)):
-        s1, f1 = amb[a]; j1 = ppp.IB(s1, f1, nav.na)
-        for b2 in range(a + 1, len(amb)):
-            s2, f2 = amb[b2]; j2 = ppp.IB(s2, f2, nav.na)
-            c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
-            nav.P[j1, j2] = c; nav.P[j2, j1] = c
-    bad = ~np.isfinite(nav.P)
-    if bad.any():
-        nav.P[bad] = 0.0
-        d = np.where(np.diag(bad))[0]
-        nav.P[d, d] = 1e10
-    nav.elmaskar = np.deg2rad(15.0)
-    sat_ar = np.array(sorted({s_ for (s_, f) in amb}))
-    nb, _ = ppp.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
-    return nb, (np.array(nav.xa[0:3]) if nb > 0 else None)
-
-
 nfac = 0
 first_fix = None
 n_fix = 0
@@ -259,7 +203,8 @@ for ei, fr in enumerate(frames):
     isam.update(graph, val)
 
     res = isam.calculateEstimate()
-    nb, xa = try_ar(res, fr)
+    nb, xa = resolve_ar(ppp, isam, res, X, AM, fr.sat, fr.el, seen_am, nf,
+                        SYSS, conv_sigma=1.0)
     xh = xa if nb > 0 else np.array(res.atPoint3(X))
     enu = ecef2enu(pos_ref, xh - xyz_ref)
     if nb > 0:
