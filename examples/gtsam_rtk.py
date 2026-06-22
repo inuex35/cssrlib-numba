@@ -20,10 +20,12 @@ import numpy as np
 
 import cssrlib.rinex as rn
 import cssrlib.gnss as gn
-from cssrlib.gnss import rSigRnx, uTYP, sat2prn, ecef2pos
+from cssrlib.gnss import rSigRnx, uTYP, sat2prn
 from cssrlib.rtk import rtkpos
 import gtsam
 from gtsam import symbol
+
+from gnss_ar import resolve_ar
 
 X = symbol('x', 0)                       # static rover ECEF position
 SYSS = (gn.uGNSS.GPS, gn.uGNSS.GAL)
@@ -107,60 +109,6 @@ def main():
               f"2D={np.hypot(enu[0], enu[1]):.3f}  "
               f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
 
-    def try_ar(res, dd):
-        """cssrlib resamb_lambda on the current ISAM2 float (+ joint cov).
-        Returns (nb, fixed_xyz). Covariance bridge: ambiguity-only joint
-        (stable) + pairwise (X, ambiguity) cross (the full position+ambiguity
-        joint is ill-conditioned -> NaN here)."""
-        nav.x[nav.na:] = 0.0
-        nav.P[:, :] = 0.0
-        nav.vsat[:, :] = 0
-        nav.x[0:3] = np.array(res.atPoint3(X))
-        el_now = {int(s): dd.el[k] for k, s in enumerate(dd.sat)}
-        amb = [(int(s), f) for s in dd.sat for f in range(nf)
-               if sat2prn(int(s))[0] in SYSS and AM(int(s), f) in seen_am
-               and res.exists(AM(int(s), f))]
-        if len(amb) < 4:
-            return 0, None
-        for (s_, f) in amb:
-            j = rtk.IB(s_, f, nav.na)
-            nav.x[j] = res.atDouble(AM(s_, f))
-            nav.vsat[s_ - 1, f] = 1
-            if s_ in el_now:
-                nav.el[s_ - 1] = el_now[s_]
-        nav.P[0:3, 0:3] = isam.marginalCovariance(X)
-        kv = gtsam.KeyVector()
-        for (s_, f) in amb:
-            kv.append(AM(s_, f))
-        jm = isam.jointMarginalCovariance(kv)
-        for (s_, f) in amb:
-            j = rtk.IB(s_, f, nav.na)
-            nav.P[j, j] = jm.at(AM(s_, f), AM(s_, f))[0, 0]
-            kvx = gtsam.KeyVector()
-            kvx.append(X)
-            kvx.append(AM(s_, f))
-            pxn = isam.jointMarginalCovariance(kvx).at(X, AM(s_, f))[:, 0]
-            nav.P[0:3, j] = pxn
-            nav.P[j, 0:3] = pxn
-        for a in range(len(amb)):
-            s1, f1 = amb[a]
-            j1 = rtk.IB(s1, f1, nav.na)
-            for b in range(a + 1, len(amb)):
-                s2, f2 = amb[b]
-                j2 = rtk.IB(s2, f2, nav.na)
-                c = jm.at(AM(s1, f1), AM(s2, f2))[0, 0]
-                nav.P[j1, j2] = c
-                nav.P[j2, j1] = c
-        bad = ~np.isfinite(nav.P)
-        if bad.any():
-            nav.P[bad] = 0.0
-            d = np.where(np.diag(bad))[0]
-            nav.P[d, d] = 1e10
-        nav.elmaskar = np.deg2rad(15.0)
-        sat_ar = np.array(sorted({s_ for (s_, f) in amb}))
-        nb, _ = rtk.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
-        return nb, (np.array(nav.xa[0:3]) if nb > 0 else None)
-
     nfac = 0
     first_fix = None
     n_fix = 0
@@ -239,7 +187,8 @@ def main():
         isam.update(graph, val)
 
         res = isam.calculateEstimate()
-        nb, xa = try_ar(res, dd)
+        nb, xa = resolve_ar(rtk, isam, res, X, AM, dd.sat, dd.el,
+                            seen_am, nf, SYSS)
         xh = xa if nb > 0 else np.array(res.atPoint3(X))
         enu = gn.ecef2enu(pos_ref, xh - xyz_ref)
         mode = 'FIX  ' if nb > 0 else 'float'
