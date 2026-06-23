@@ -20,7 +20,7 @@ from binascii import unhexlify
 import numpy as np
 
 from cssrlib.cssrlib import cssr
-from cssrlib.gnss import (ecef2pos, ecef2enu, Nav, time2gpst, time2doy,
+from cssrlib.gnss import (ecef2pos, Nav, time2gpst, time2doy,
                           rSigRnx, epoch2time, sat2prn, uGNSS)
 from cssrlib.gnss import geodist as cssr_geodist
 from cssrlib.peph import atxdec, searchpcv
@@ -29,7 +29,7 @@ from cssrlib.rinex import rnxdec
 import gtsam
 from gtsam import symbol
 
-from gnss_ar import resolve_ar
+from gnss_ar import ARSession
 
 CLIGHT = 299792458.0
 DATADIR = os.environ.get(
@@ -131,10 +131,9 @@ def ztd_rw():
 
 
 seen_io, seen_am, seen_ck = set(), set(), set()
+ar = ARSession(ppp, isam, X, AM, nf, SYSS, pos_ref, xyz_ref, conv_sigma=1.0)
 
 nfac = 0
-first_fix = None
-n_fix = 0
 for ei, fr in enumerate(frames):
     graph = gtsam.NonlinearFactorGraph()
     val = gtsam.Values()
@@ -201,20 +200,8 @@ for ei, fr in enumerate(frames):
                 gtsam.noiseModel.Isotropic.Sigma(1, 0.006 * s_el)))
     nfac += graph.size()
     isam.update(graph, val)
+    ar.step(ei, isam.calculateEstimate(), seen_am, fr.sat, fr.el)
 
-    res = isam.calculateEstimate()
-    nb, xa = resolve_ar(ppp, isam, res, X, AM, fr.sat, fr.el, seen_am, nf,
-                        SYSS, conv_sigma=1.0)
-    xh = xa if nb > 0 else np.array(res.atPoint3(X))
-    enu = ecef2enu(pos_ref, xh - xyz_ref)
-    if nb > 0:
-        n_fix += 1
-        if first_fix is None:
-            first_fix = ei
-    print(f"ep{ei:3d} {'FIX  ' if nb > 0 else 'float'} nb={nb:2d} "
-          f"2D={np.hypot(enu[0], enu[1]):.3f} "
-          f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
-
-print(f"\nupdates: {len(frames)} epochs, {nfac} factors, "
+print(f"updates: {len(frames)} epochs, {nfac} factors, "
       f"{len(seen_am)} ambiguities")
-print(f"first fix: epoch {first_fix}   fixed {n_fix}/{len(frames)} epochs")
+ar.summary()
