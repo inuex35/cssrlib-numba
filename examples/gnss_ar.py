@@ -13,7 +13,7 @@ covariance is assembled from the ambiguity-only joint (stable) plus pairwise
 """
 import numpy as np
 import gtsam
-from cssrlib.gnss import sat2prn
+from cssrlib.gnss import sat2prn, ecef2enu
 
 
 def resolve_ar(engine, isam, res, x_key, amb_key, sats, el, seen_am, nf, syss,
@@ -99,3 +99,40 @@ def resolve_ar(engine, isam, res, x_key, amb_key, sats, el, seen_am, nf, syss,
     sat_ar = np.array(sorted({s_ for (s_, f) in amb}))
     nb, _ = engine.resamb_lambda(sat_ar, nav.parmode, nav.par_P0)
     return nb, (np.array(nav.xa[0:3]) if nb > 0 else None)
+
+
+class ARSession:
+    """Per-epoch AR driver: runs resolve_ar, prints the epoch line, and tracks
+    time-to-first-fix and the fix rate. Keeps the example loops to a few lines.
+
+    conv_sigma: position 1-sigma [m] gate before AR (None for RTK, ~1 m for PPP).
+    """
+
+    def __init__(self, engine, isam, x_key, amb_key, nf, syss,
+                 pos_ref, xyz_ref, conv_sigma=None):
+        self.engine, self.isam, self.x_key, self.amb_key = \
+            engine, isam, x_key, amb_key
+        self.nf, self.syss, self.conv_sigma = nf, syss, conv_sigma
+        self.pos_ref, self.xyz_ref = pos_ref, np.asarray(xyz_ref)
+        self.first_fix, self.n_fix, self.n = None, 0, 0
+
+    def step(self, ei, res, seen_am, sats, el):
+        """Resolve this epoch, print, accumulate stats; return (nb, ecef_xyz)."""
+        nb, xa = resolve_ar(self.engine, self.isam, res, self.x_key,
+                            self.amb_key, sats, el, seen_am, self.nf,
+                            self.syss, self.conv_sigma)
+        xh = xa if nb > 0 else np.asarray(res.atPoint3(self.x_key))
+        enu = ecef2enu(self.pos_ref, xh - self.xyz_ref)
+        self.n += 1
+        if nb > 0:
+            self.n_fix += 1
+            if self.first_fix is None:
+                self.first_fix = ei
+        print(f"ep{ei:3d} {'FIX  ' if nb > 0 else 'float'} nb={nb:2d} "
+              f"2D={np.hypot(enu[0], enu[1]):.3f} "
+              f"3D={np.linalg.norm(xh - self.xyz_ref):.3f} m")
+        return nb, xh
+
+    def summary(self):
+        print(f"\nfirst fix: epoch {self.first_fix}   "
+              f"fixed {self.n_fix}/{self.n} epochs")

@@ -25,7 +25,7 @@ from cssrlib.rtk import rtkpos
 import gtsam
 from gtsam import symbol
 
-from gnss_ar import resolve_ar
+from gnss_ar import ARSession
 
 X = symbol('x', 0)                       # static rover ECEF position
 SYSS = (gn.uGNSS.GPS, gn.uGNSS.GAL)
@@ -102,16 +102,9 @@ def main():
     params.setFactorization('QR')
     isam = gtsam.ISAM2(params)
     seen_am, pinned = set(), set()
-
-    def report(tag, xh):
-        enu = gn.ecef2enu(pos_ref, xh - xyz_ref)
-        print(f"{tag}: E{enu[0]:+.3f} N{enu[1]:+.3f} U{enu[2]:+.3f}  "
-              f"2D={np.hypot(enu[0], enu[1]):.3f}  "
-              f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
+    ar = ARSession(rtk, isam, X, AM, nf, SYSS, pos_ref, xyz_ref)
 
     nfac = 0
-    first_fix = None
-    n_fix = 0
     for ei, (obs, obsb, dd) in enumerate(frames):
         graph = gtsam.NonlinearFactorGraph()
         val = gtsam.Values()
@@ -185,23 +178,11 @@ def main():
                         gtsam.noiseModel.Isotropic.Sigma(1, 0.01 * s)))
         nfac += graph.size()
         isam.update(graph, val)
+        ar.step(ei, isam.calculateEstimate(), seen_am, dd.sat, dd.el)
 
-        res = isam.calculateEstimate()
-        nb, xa = resolve_ar(rtk, isam, res, X, AM, dd.sat, dd.el,
-                            seen_am, nf, SYSS)
-        xh = xa if nb > 0 else np.array(res.atPoint3(X))
-        enu = gn.ecef2enu(pos_ref, xh - xyz_ref)
-        mode = 'FIX  ' if nb > 0 else 'float'
-        if nb > 0:
-            n_fix += 1
-            if first_fix is None:
-                first_fix = ei
-        print(f"ep{ei:3d} {mode} nb={nb:2d} 2D={np.hypot(enu[0], enu[1]):.3f} "
-              f"3D={np.linalg.norm(xh - xyz_ref):.3f} m")
-
-    print(f"\nupdates: {len(frames)} epochs, {nfac} factors, "
+    print(f"updates: {len(frames)} epochs, {nfac} factors, "
           f"{len(seen_am)} ambiguities")
-    print(f"first fix: epoch {first_fix}   fixed {n_fix}/{len(frames)} epochs")
+    ar.summary()
 
 
 if __name__ == "__main__":
