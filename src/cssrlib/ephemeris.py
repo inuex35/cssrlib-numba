@@ -39,6 +39,25 @@ def findeph(nav, t, sat, iode=-1, mode=0):
             eph = eph_
             tmin = dt
 
+    # RINEX-4 fallback: a constellation may be broadcast only under a
+    # non-default navigation message (e.g. BeiDou-3 as B-CNAV1/2/3, mode
+    # 1/2/3, with no legacy D1/D2 mode-0 records). If nothing matched the
+    # requested message type, retry ignoring ``mode`` so the nearest-in-time
+    # ephemeris is still selected. Restricted to the plain broadcast lookup
+    # (mode == 0 and iode < 0); IODE/mode-keyed SSR lookups keep the strict
+    # behaviour, so this can only add results where the old code returned None.
+    if eph is None and iode < 0 and mode == 0:
+        tmin = tmax + 1.0
+        for eph_ in nav:
+            if eph_.sat != sat:
+                continue
+            dt = abs(timediff(t, eph_.toe))
+            if dt > tmax:
+                continue
+            if dt <= tmin:
+                eph = eph_
+                tmin = dt
+
     return eph
 
 
