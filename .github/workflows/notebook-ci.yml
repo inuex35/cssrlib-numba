@@ -72,8 +72,30 @@ jobs:
           pip install -e .
           pip install jupyter nbconvert ipykernel
 
+      - name: Cache cssrlib-data subset
+        id: data-cache
+        uses: actions/cache@v4
+        with:
+          path: cssrlib-data
+          key: cssrlib-data-doy2025-233-v1
+
+      - name: Fetch cssrlib-data (sparse, doy2025-233 + grid) + IGS antex
+        if: steps.data-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/hirokawa/cssrlib-data
+          cd cssrlib-data
+          git sparse-checkout set --no-cone \
+            '/data/doy2025-233/*' '/data/clas_grid.def'
+          # igs20.atx is no longer tracked upstream; take it from IGS.
+          mkdir -p data/antex
+          curl -fsSL -o data/antex/igs20.atx \
+            https://files.igs.org/pub/station/general/igs20.atx
+
       - name: Execute gtsam_ppprtk notebook
         working-directory: examples
+        env:
+          CSSRLIB_DATA: ${{ github.workspace }}/cssrlib-data/data
         run: |
           jupyter nbconvert --to notebook --execute gtsam_ppprtk.ipynb \
             --output executed_ppprtk.ipynb --ExecutePreprocessor.timeout=900
