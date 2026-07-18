@@ -870,7 +870,7 @@ class rnxdec:
                 # Extract string list of signal codes
                 #
                 sigs = line[7:60].split()
-                for _ in range(int(nsig/14)):
+                while len(sigs) < nsig:
                     line2 = self.fobs.readline()
                     sigs += line2[7:60].split()
 
