@@ -1215,12 +1215,26 @@ class pppos():
                 obs.L = np.atleast_2d(obs.L)
                 obs.P = np.atleast_2d(obs.P)
 
-            # Store satellite which have passed all tests. Drop a satellite
-            # only when ALL its frequencies failed editing: systems with
-            # fewer bands than nav.nf (e.g. GPS L1+L2 under nf=3) keep their
-            # valid bands and per-(sat, freq) consumers skip the missing
-            # ones (RTKLIB-style per-frequency editing).
-            if np.all(self.nav.edt[i, :] > 0):
+            # Store satellite which have passed all tests. A band that was
+            # never observed (raw P and L both zero, e.g. GPS L5 under
+            # nf=3) cannot be "edited" — skip it and keep the satellite.
+            # A band that IS present but failed a quality check (low C/N0,
+            # code-only / phase-only tracking) marks the whole satellite
+            # suspect, exactly like the classic all-band gate: degraded
+            # tracking on one band is a multipath/NLOS canary for the
+            # others.
+            # Store satellite which have passed all tests, judged over the
+            # bands its SYSTEM actually selected (a constellation offered
+            # fewer than nav.nf common bands — e.g. GPS L1+L2 in an nf=3
+            # setup — is judged on those bands only, so its satellites are
+            # not punished for a slot that was never selected). Within the
+            # selected bands the classic strict gate applies: any edited
+            # band drops the whole satellite — a missing or degraded band
+            # on a satellite whose system does provide it is a tracking /
+            # multipath canary.
+            nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
+            if nf_sys <= 0 or np.any(self.nav.edt[i, :nf_sys] > 0):
+                self.nav.edt[i, :] = 1
                 continue
 
             sat.append(sat_i)
