@@ -6,9 +6,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  gtsam-rtk-notebook:
+  # Runs the OFFICIAL gtsam notebook (borglab/gtsam develop:
+  # python/gtsam/examples/RtkAndPppExample.ipynb) against the cssrlib code
+  # under test. GTSAM comes from the official gtsam-develop nightly on PyPI
+  # (it carries the DoubleDifference and Undifferenced GNSS factors); only
+  # cssrlib is swapped for the checked-out revision, so a red run means this
+  # repo broke the official notebook.
+  official-rtk-ppp-notebook:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -16,98 +22,40 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: System deps for the prebuilt GTSAM wheel
+      - name: Install GTSAM nightly (official PyPI) + notebook tooling
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libboost-serialization1.83.0 libboost-timer1.83.0
-
-      - name: Install GTSAM (prebuilt custom wheel with DD/NHC/FLS)
-        run: |
-          pip install https://github.com/inuex35/gtsam/releases/download/wheel-nhc-cp312-ubuntu2404/gtsam-4.3a1-cp312-cp312-linux_x86_64.whl
-
-      - name: Install cssrlib + notebook tooling
-        run: |
-          pip install -e .
+          pip install numpy gtsam-develop
           pip install jupyter nbconvert ipykernel
+          python -c "import gtsam; assert hasattr(gtsam, 'DoubleDifferencePseudorangeFactor'), 'gtsam-develop nightly lacks the DD factors'"
 
-      - name: Execute gtsam_rtk notebook
-        working-directory: examples
+      - name: Install cssrlib under test
+        run: pip install -e .
+
+      - name: Fetch official notebook + GNSS front-end helper (borglab develop)
         run: |
-          jupyter nbconvert --to notebook --execute gtsam_rtk.ipynb \
-            --output executed_rtk.ipynb --ExecutePreprocessor.timeout=900
+          mkdir -p official
+          cd official
+          curl -fsSL -O https://raw.githubusercontent.com/borglab/gtsam/develop/python/gtsam/examples/RtkAndPppExample.ipynb
+          curl -fsSL -O https://raw.githubusercontent.com/borglab/gtsam/develop/python/gtsam/examples/gnss_frontend.py
 
-      - name: Check RTK metrics
-        run: |
-          python ci/check_gnss_notebook.py examples/executed_rtk.ipynb \
-            --fix3d-max 0.05 --min-amb 20 --float3d-max 0.5
-
-      - name: Upload executed notebook
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: executed-rtk-notebook
-          path: examples/executed_rtk.ipynb
-
-  gtsam-ppprtk-notebook:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: System deps for the prebuilt GTSAM wheel
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libboost-serialization1.83.0 libboost-timer1.83.0
-
-      - name: Install GTSAM (develop wheel with Undifferenced + DD factors)
-        run: |
-          pip install https://github.com/inuex35/gtsam/releases/download/wheel-develop-cp312-ubuntu2404/gtsam-4.3a1-cp312-cp312-linux_x86_64.whl
-
-      - name: Install cssrlib + notebook tooling
-        run: |
-          pip install -e .
-          pip install jupyter nbconvert ipykernel
-
-      - name: Cache cssrlib-data subset
-        id: data-cache
+      - name: Cache notebook GNSS data
         uses: actions/cache@v4
         with:
-          path: cssrlib-data
-          key: cssrlib-data-doy2025-233-v1
+          path: official/gnss_data
+          key: official-gnss-data-v1
 
-      - name: Fetch cssrlib-data (sparse, doy2025-233 + grid) + IGS antex
-        if: steps.data-cache.outputs.cache-hit != 'true'
+      - name: Execute official notebook
+        working-directory: official
         run: |
-          git clone --depth 1 --filter=blob:none --sparse \
-            https://github.com/hirokawa/cssrlib-data
-          cd cssrlib-data
-          git sparse-checkout set --no-cone \
-            '/data/doy2025-233/*' '/data/clas_grid.def'
-          # igs20.atx is no longer tracked upstream; take it from IGS.
-          mkdir -p data/antex
-          curl -fsSL -o data/antex/igs20.atx \
-            https://files.igs.org/pub/station/general/igs20.atx
+          jupyter nbconvert --to notebook --execute RtkAndPppExample.ipynb \
+            --output executed_official.ipynb --ExecutePreprocessor.timeout=1200
 
-      - name: Execute gtsam_ppprtk notebook
-        working-directory: examples
-        env:
-          CSSRLIB_DATA: ${{ github.workspace }}/cssrlib-data/data
-        run: |
-          jupyter nbconvert --to notebook --execute gtsam_ppprtk.ipynb \
-            --output executed_ppprtk.ipynb --ExecutePreprocessor.timeout=900
-
-      - name: Check PPP-RTK metrics
-        run: |
-          python ci/check_gnss_notebook.py examples/executed_ppprtk.ipynb \
-            --fix3d-max 0.15 --min-amb 15 --float3d-max 1.0
+      - name: Check metrics (RTK + PPP-RTK)
+        run: python ci/check_official_notebook.py official/executed_official.ipynb
 
       - name: Upload executed notebook
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: executed-ppprtk-notebook
-          path: examples/executed_ppprtk.ipynb
+          name: executed-official-notebook
+          path: official/executed_official.ipynb
