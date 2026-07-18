@@ -1357,8 +1357,11 @@ class gnssobs():
                 sys, _ = sat2prn(sat_i)
                 sig1, sig2 = obs.sig[sys][uTYP.L][0:2]
                 if sys == uGNSS.GLO:
-                    lam1 = sig1.wavelength(self.nav.glo_ch[sat_i])
-                    lam2 = sig2.wavelength(self.nav.glo_ch[sat_i])
+                    # FDMA channel may be unknown (no GLO eph decoded);
+                    # lam=0 keeps the GF test a no-op instead of KeyError.
+                    ch = self.nav.glo_ch.get(sat_i)
+                    lam1 = sig1.wavelength(ch) if ch is not None else 0.0
+                    lam2 = sig2.wavelength(ch) if ch is not None else 0.0
                 else:
                     lam1 = sig1.wavelength()
                     lam2 = sig2.wavelength()
@@ -1383,12 +1386,19 @@ class gnssobs():
                                                         sig1.str(), gf0, gf1,
                                                         gf0-gf1))
 
-            # Store satellite which have passed all tests. Drop a satellite
-            # only when ALL its frequencies failed editing: systems with
-            # fewer bands than nav.nf (e.g. GPS L1+L2 under nf=3) keep their
-            # valid bands and per-(sat, freq) consumers skip the missing
-            # ones (RTKLIB-style per-frequency editing).
-            if np.all(self.nav.edt[i, :] > 0):
+            # Store satellite which have passed all tests, judged over the
+            # bands its SYSTEM actually selected (a constellation offering
+            # fewer than nav.nf common bands — e.g. GPS L1+L2 in an nf=3
+            # setup — is judged on those bands only, so its satellites are
+            # not punished for a slot that was never selected). Within the
+            # selected bands the classic strict gate applies: any edited
+            # band drops the whole satellite — a missing or degraded band
+            # on a satellite whose system does provide it is a tracking /
+            # multipath canary (admitting L5-less GPS or B1I-only BeiDou-2
+            # measurably poisons the urban float solution).
+            nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
+            if nf_sys <= 0 or np.any(self.nav.edt[i, :nf_sys] > 0):
+                self.nav.edt[i, :] = 1
                 continue
 
             sat.append(sat_i)
