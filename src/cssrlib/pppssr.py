@@ -1177,10 +1177,15 @@ class pppos():
             ):
                 L1R, L2R = obs.L[j, 0:2]
                 sig1, sig2 = sig_table[sys_i][uTYP.L][0:2]
+                lam1 = lam2 = 0.0
                 if gf_pair == "glo":
-                    ch = self.nav.glo_ch[sat_i]
-                    lam1 = sig1.wavelength(ch)
-                    lam2 = sig2.wavelength(ch)
+                    # FDMA channel may be unknown (no GLO eph decoded);
+                    # lam=0 makes _gf_slip_check a no-op instead of a
+                    # KeyError.
+                    ch = self.nav.glo_ch.get(sat_i)
+                    if ch is not None:
+                        lam1 = sig1.wavelength(ch)
+                        lam2 = sig2.wavelength(ch)
                 else:
                     lam1, lam2 = gf_pair
                 gf_prev = float(self.nav.gf[sat_i])
