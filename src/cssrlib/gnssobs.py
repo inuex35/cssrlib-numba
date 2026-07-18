@@ -1383,9 +1383,12 @@ class gnssobs():
                                                         sig1.str(), gf0, gf1,
                                                         gf0-gf1))
 
-            # Store satellite which have passed all tests
-            #
-            if np.any(self.nav.edt[i, :] > 0):
+            # Store satellite which have passed all tests. Drop a satellite
+            # only when ALL its frequencies failed editing: systems with
+            # fewer bands than nav.nf (e.g. GPS L1+L2 under nf=3) keep their
+            # valid bands and per-(sat, freq) consumers skip the missing
+            # ones (RTKLIB-style per-frequency editing).
+            if np.all(self.nav.edt[i, :] > 0):
                 continue
 
             sat.append(sat_i)
