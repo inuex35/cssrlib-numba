@@ -122,6 +122,18 @@ class rtkpos(pppos):
 
         np.maximum(nav_rover.slip, nav_base.slip, out=nav_rover.slip)
 
+        # Per-frequency editing: a sat survives qcedit if ANY band passed,
+        # so zero out the bands that failed on either receiver. Consumers
+        # (SD diff below, DD factor builders) already skip zero L / P.
+        nfu = min(self.nav.nf, obs.L.shape[1])
+        eu = nav_rover.edt[np.asarray(obs.sat) - 1, :nfu] > 0
+        obs.L[:, :nfu][eu] = 0.0
+        obs.P[:, :nfu][eu] = 0.0
+        nfr = min(self.nav.nf, obsb.L.shape[1])
+        er = nav_base.edt[np.asarray(obsb.sat) - 1, :nfr] > 0
+        obsb.L[:, :nfr][er] = 0.0
+        obsb.P[:, :nfr][er] = 0.0
+
         sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
         iu, ir = self._common_indices(obs, obsb, sat_ed)
 
