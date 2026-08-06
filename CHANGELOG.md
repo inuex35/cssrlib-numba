@@ -92,17 +92,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   and `resamb_lambda` all stay. Recover the zdres-based `base_process`
   from `dev` if the EKF RTK loop is ever wanted back.
 
-- `tutorials/basic.ipynb`, which was the EKF RTK path's only caller. It had
-  already stopped working for unrelated reasons: it imports `cssrlib.pntpos`
-  and `cssrlib.plot`, both deleted with the minimal core. Nothing references
-  it and CI does not execute it. `tutorials/cssrlib.ipynb` is unaffected —
-  it clones upstream `hirokawa/cssrlib` rather than using this tree, which
-  is also where the README's Colab badge points.
+- The `tutorials/` directory. `basic.ipynb` was the EKF RTK path's only
+  caller, and every notebook that used this tree had already stopped working
+  when the minimal core deleted the modules they import: `basic.ipynb`
+  (`pntpos`, `plot`), `auth.ipynb` (`osnma`, `qznma`), `ewss.ipynb` (`ewss`)
+  and `ppp.ipynb` (`plot`, `rtcm`, and `pppssr` under its pre-rename name).
+  CI never ran them — `notebook-ci.yml` executes GTSAM's upstream
+  `RtkAndPppExample.ipynb` — and they were not packaged (`MANIFEST.in` and
+  `setup.cfg` ship `src` only). The remaining notebook, `cssrlib.ipynb`, was
+  self-contained: it clones upstream `hirokawa/cssrlib` instead of using
+  this tree, which is also where the README's Colab badge points, so that
+  badge still works.
 
-  Still shipped but broken against this branch's module set, for the same
-  minimal-core reason: `tutorials/auth.ipynb` (needs `osnma`, `qznma`),
-  `tutorials/ewss.ipynb` (needs `ewss`) and `tutorials/ppp.ipynb` (needs
-  `plot`, `rtcm`, and `pppssr` under its pre-rename name).
+- `crccheck`, `notebook` and `cartopy` as install requirements. Nothing in
+  `src/`, `examples/` or `ci/` imports them; they existed for the deleted
+  notebooks. Dropping `cartopy` also removes the `libgeos++-dev` workaround
+  from the README, since a library that never imports it should not force
+  a build that commonly fails.
+
+  `scipy` stays despite no source file importing it: Numba binds `np.linalg`
+  to SciPy's BLAS/LAPACK at runtime, and without it the njit'd `geodist`
+  dies with `RuntimeError: Specified LAPACK function could not be found`.
+  Verified by installing the trimmed requirements into a fresh virtualenv:
+  all 19 modules import, 49 tests pass, and both numerical goldens are
+  unchanged.
 
 - NOTE: the two entries below describe the minimal-core state that commit
   20c0df1 superseded when it re-added the SSR/CSSR, `peph`, `ppp` and

@@ -1,9 +1,7 @@
-scipy
 bitstruct
 galois
-crccheck
-notebook
 numpy
 numba
+# Required by Numba's np.linalg support (BLAS/LAPACK), not imported directly.
+scipy
 matplotlib
-cartopy
