@@ -11,9 +11,8 @@ external estimators (e.g. GTSAM factor-graph RTK):
 import numpy as np
 
 from cssrlib.mlambda import mlambda, ldldecom, LambdaError
-from cssrlib.gnss import Nav, Obs, rSigRnx, uGNSS, uTYP
-from cssrlib.pppssr import _qcedit_system_cache, _sig_label
-from cssrlib.rtk import DDMeasurements
+from cssrlib.gnss import Nav, Obs, rSigRnx, uGNSS, uTYP, prn2sat, gpst2time
+from cssrlib.rtk import DDMeasurements, rtkpos
 
 
 def test_mlambda_raises_catchable_exception():
@@ -37,10 +36,18 @@ def test_mlambda_raises_catchable_exception():
         raise AssertionError("mlambda should have raised")
 
 
-def test_qcedit_cache_handles_short_band_system():
-    """A system with fewer bands than nav.nf must not raise IndexError."""
+def test_qcedit_handles_short_band_system():
+    """A system with fewer bands than nav.nf must not raise IndexError.
+
+    GLONASS here carries a single band in an nf=2 setup, so the frequency
+    loop runs past the end of its signal lists. qcedit must treat the
+    missing slot as absent rather than indexing off the end, and must not
+    punish those satellites for a band their system never selected.
+    """
     nav = Nav(nf=2)  # dual-frequency setup
     obs = Obs()
+    obs.t = gpst2time(2148, 259200.0)
+    nav.t = obs.t
     obs.sig = {
         uGNSS.GPS: {uTYP.C: [rSigRnx("GC1C"), rSigRnx("GC2W")],
                     uTYP.L: [rSigRnx("GL1C"), rSigRnx("GL2W")],
@@ -50,14 +57,36 @@ def test_qcedit_cache_handles_short_band_system():
                     uTYP.S: [rSigRnx("RS1C")]},
     }
 
-    cache = _qcedit_system_cache(obs, nav)
+    sats = [prn2sat(uGNSS.GPS, 1), prn2sat(uGNSS.GPS, 2),
+            prn2sat(uGNSS.GLO, 1), prn2sat(uGNSS.GLO, 2)]
+    obs.sat = np.array(sats, dtype=int)
+    n = len(sats)
+    obs.P = np.full((n, 2), 2.2e7)
+    obs.L = np.full((n, 2), 1.1e8)
+    obs.S = np.full((n, 2), 45.0)
+    obs.lli = np.zeros((n, 2), dtype=int)
+    # GLONASS carries one band only.
+    obs.P[2:, 1] = 0.0
+    obs.L[2:, 1] = 0.0
+    obs.S[2:, 1] = 0.0
 
-    # cnr_thresholds always has length nf, regardless of available bands.
-    assert cache[uGNSS.GPS][3].shape == (2,)
-    assert cache[uGNSS.GLO][3].shape == (2,)
-    # Out-of-range band label falls back instead of raising.
-    assert _sig_label(cache[uGNSS.GLO][2], 1) == "f1"
-    assert _sig_label(cache[uGNSS.GPS][2], 1) == "S2W"
+    rr = np.array([-3962108.7, 3381309.5, 3668678.6])
+    rtk = rtkpos(nav, rr)   # allocates nav.x / nav.edt / nav.el
+    nav.x[0:3] = rr
+    nav.t = obs.t
+
+    # Satellites straight overhead, so nothing is cut by the elevation mask.
+    rs = np.tile(rr / np.linalg.norm(rr) * 2.0e7, (n, 1))
+    dts = np.zeros(n)
+    svh = np.zeros(n, dtype=int)
+
+    sat_ed = rtk.qcedit(obs, rs, dts, svh)     # must not raise IndexError
+
+    assert nav.edt.shape[1] == 2
+    # The single-band GLONASS satellites survive on their one selected band.
+    for s in sats[2:]:
+        assert s in sat_ed, "single-band GLO satellite was dropped"
+        assert nav.edt[s - 1, 0] == 0
 
 
 def test_dd_measurements_dual_access():
@@ -112,7 +141,7 @@ def test_auto_detect_signals():
 
 if __name__ == "__main__":
     test_mlambda_raises_catchable_exception()
-    test_qcedit_cache_handles_short_band_system()
+    test_qcedit_handles_short_band_system()
     test_dd_measurements_dual_access()
     test_auto_detect_signals()
     print("OK")

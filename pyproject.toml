@@ -21,6 +21,7 @@ dependencies = [
     "crccheck",
     "notebook",
     "numpy",
+    "numba",
     "matplotlib",
     "cartopy",
 ]

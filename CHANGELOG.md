@@ -5,7 +5,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- `mlambda` was silently reverted to the upstream pure-Python implementation
+  by 20c0df1 ("port full PPP-RTK (CLAS) onto the minimal core"), which
+  described the change only as "unified on the full implementation". That
+  discarded the 8 Numba kernels, the RTKLIB `LOOPMAX` search caps and the
+  `LambdaError` exception. All three are restored. `ldldecom` again raises
+  `LambdaError` (a `numpy.linalg.LinAlgError` subclass) instead of
+  `SystemExit`, so an external estimator embedding LAMBDA can catch a
+  non positive-definite covariance instead of having its process torn down.
+  Verified numerically identical to the reverted version over the module's
+  own example plus 20 random covariances, at both search modes; ~36x faster
+  for n=12.
+
+- `gnssobs.zdres` raised `TypeError: unsupported operand type(s) for +:
+  'float' and 'list'` whenever no receiver antenna model was loaded — that
+  is, on every plain RTK/PPP run without an ANTEX file. The
+  `nav.rcv_ant is None` and non-SSR fallbacks built Python lists where
+  `antModelRx`/`antModelTx` return `np.ndarray`, so the range-correction sum
+  hit `float + list`. They now build `np.zeros(...)` like the real thing.
+
+- `gnssobs.qcedit` raised `ValueError: not enough values to unpack` in the
+  geometry-free slip test for a constellation carrying a single band in a
+  multi-frequency setup (e.g. GLONASS L1 only with `nav.nf == 2`). The guard
+  tested `obs.L.shape[1]`, the array width, which is `nf` for every system;
+  it now also requires the system to have actually selected two bands.
+
+- `gnssobs.process` crashed for RTK with `'NoneType' object does not support
+  item assignment`: it took the `y`/`e` buffers from `base_process`, but the
+  DD-only `rtkpos.base_process` override returns `None` for both. `process`
+  now allocates them itself from the common-satellite count, as the PPP
+  branch already did. (This unblocks `zdres`/`sdres`, but the EKF RTK loop
+  is still not usable end to end — see Known issues.)
+
+- `resamb_lambda`'s first parameter was named `armode` while every caller
+  passes `nav.parmode`. `nav.armode` (0 off / 1 on / 3 fix-and-hold) and
+  `nav.parmode` (1 full ILS / 2 partial AR) are different settings, so the
+  name said the opposite of what was passed. Renamed to `parmode`, matching
+  `mlambda`'s own keyword.
+
 ### Added
+
+- Numba kernels restored in `gnssobs` (they were lost when 20c0df1 deleted
+  `pppssr.py` in favour of a hand-merged `gnssobs.py`): `_ddidx_core`,
+  `_ddcov_numpy`, `_sdres_core`, `_sdres_build_plan`, `_sdres_variance` and
+  `_tropmapf_dispatch_ppp`, ported from `dev`. `ddidx` drops from 24.4 ms to
+  0.006 ms for 30 satellites — it ran a `MAXSAT x GNSSMAX x nf` loop with a
+  `sat_i not in sat` linear scan inside, once per AR epoch. `sdres` is ~1.5x
+  faster. Both verified bit-identical to the previous implementation over 20
+  epochs of the bundled dataset and 12 synthetic GPS/Galileo/BeiDou cases.
+
+- `numba` is declared in `pyproject.toml` and `requirements.txt`. It was a
+  hard import in `geometry`, `atmosphere`, `orbit` and `glonass` (and now
+  `mlambda` and `gnssobs`) but had never been declared, so a clean
+  `pip install cssrlib` produced a package that could not be imported.
 
 - `rinex.auto_detect_signals(sig_map_rov, sig_map_base=None, max_freq=2, ...)`
   builds per-system signal lists straight from the RINEX header(s), so the
@@ -14,7 +68,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   convenience method `rnxdec.autoSignals(decb=None, max_freq=2)` which detects
   and applies the signals in one call.
 
+### Known issues
+
+- The EKF RTK loop (`gnssobs.process` with `obsb`) does not work. `process`
+  and its `udstate`/`kfupdate` machinery came back with the CLAS PPP-RTK
+  port, but `rtkpos.base_process` is still the minimal core's DD-only
+  override: it returns plain rover-base single differences of the raw
+  observations, whereas the EKF expects rover-minus-base `zdres` residuals.
+  Feeding one into the other leaves the normal matrix singular
+  (`kfupdate` -> `LinAlgError`). The DD-only entry point
+  (`prepare_double_difference_measurements`, used by the GTSAM examples) is
+  unaffected and is the supported path. Restoring the EKF needs the
+  zdres-based `base_process` recovered from `dev`.
+
 ### Removed
+
+- NOTE: the two entries below describe the minimal-core state that commit
+  20c0df1 superseded when it re-added the SSR/CSSR, `peph`, `ppp` and
+  `ppprtk` modules and renamed `pppssr.py` to `gnssobs.py`. They are kept
+  for history; see `test_minimal_core.py` for the module set that actually
+  ships.
 
 - Reduced `rtkpos`/`pppos` to a double-difference-only core for external
   estimators. Removed the built-in EKF and undifferenced machinery —

@@ -3,11 +3,15 @@ module for standard PPP positioning
 """
 
 import numpy as np
+from numba import njit
 
 from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
+from cssrlib.gnss import SAT_SYS_ARR
 from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, geodist, satazel
 from cssrlib.gnss import time2str, timediff, gpst2utc, tropmapf, uIonoModel
+from cssrlib.gnss import time2doy
+from cssrlib.atmosphere import tropmapf_niell
 from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
 from cssrlib.ppp import shapiro, windupcorr
 from cssrlib.peph import antModelRx, antModelTx
@@ -23,6 +27,317 @@ fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
 fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
     "{:10.3f} {:10.3f} {:10.3f}\n"
 
+MIN_SIN_EL = 0.1 * rCST.D2R
+TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
+TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
+
+
+@njit(cache=True)
+def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
+                na, nf, MAXSAT, GNSSMAX, elmaskar):
+    """Inner loop of ddidx -- pick the reference satellite per (system, band)
+    and collect the DD pair indices into the ambiguity slots of nav.x.
+
+    Returns (ix, fix); the caller stores fix into nav.fix. The Python-list
+    membership test of the original is replaced by an O(1) presence array
+    indexed by satellite number, and the reference index is tracked
+    explicitly instead of relying on the loop variable leaking out of the
+    search loop.
+    """
+    sat_present = np.zeros(MAXSAT + 2, dtype=np.bool_)
+    for s in sat_arr:
+        si = int(s)
+        if 0 < si <= MAXSAT:
+            sat_present[si] = True
+
+    fix = np.zeros((MAXSAT, nf), dtype=np.int64)
+    ix = np.zeros((MAXSAT, 2), dtype=np.int64)
+    nb = 0
+
+    for m in range(GNSSMAX):
+        k = na
+        for f in range(nf):
+            i_ref = -1
+            for i in range(k, k + MAXSAT):
+                sat_i = i - k + 1
+                if sys_lookup[sat_i] != m:
+                    continue
+                if (not sat_present[sat_i]
+                        or nav_x[i] == 0.0
+                        or nav_vsat[sat_i - 1, f] == 0):
+                    continue
+                if nav_el[sat_i - 1] >= elmaskar:
+                    fix[sat_i - 1, f] = 2
+                    i_ref = i
+                    break
+                else:
+                    fix[sat_i - 1, f] = 1
+            if i_ref >= 0:
+                for j in range(k, k + MAXSAT):
+                    sat_j = j - k + 1
+                    if sys_lookup[sat_j] != m:
+                        continue
+                    if (j == i_ref
+                            or not sat_present[sat_j]
+                            or nav_x[j] == 0.0
+                            or nav_vsat[sat_j - 1, f] == 0):
+                        continue
+                    if nav_el[sat_j - 1] >= elmaskar:
+                        ix[nb, 0] = i_ref
+                        ix[nb, 1] = j
+                        nb += 1
+                        fix[sat_j - 1, f] = 2
+            k += MAXSAT
+
+    return ix[:nb].copy(), fix
+
+
+def _ddcov_numpy(nb, Ri, Rj, nv):
+    """Vectorized DD measurement-error covariance assembly."""
+    R = np.zeros((nv, nv), dtype=np.float64)
+    if nv == 0 or nb.size == 0:
+        return R
+
+    offset = 0
+    for count in nb:
+        if count <= 0:
+            continue
+        end = offset + count
+        if end > nv:
+            end = nv
+        rows = slice(offset, end)
+        n_blk = end - offset
+        block = np.broadcast_to(Ri[rows][:, None], (n_blk, n_blk)).copy()
+        block[np.diag_indices(n_blk)] += Rj[rows]
+        R[rows, rows] = block
+        offset = end
+    return R
+
+
+
+@njit(cache=True)
+def _tropmapf_dispatch_ppp(doy, pos, el, model):
+    if model == TROPO_MODEL_HOPF:
+        mapfh = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 72.0) ** 2))
+        mapfw = 1.0 / np.sin(np.sqrt(el * el + (np.pi / 120.0) ** 2))
+        return mapfh, mapfw
+    elif model == TROPO_MODEL_SAAST:
+        return tropmapf_niell(doy, pos, el)
+    return 0.0, 0.0
+
+
+
+@njit(cache=True)
+def _sdres_variance(el: float, col_idx: int, nf: int, eratio: np.ndarray, err: np.ndarray) -> float:
+    s_el = np.sin(el)
+    if s_el < MIN_SIN_EL:
+        s_el = MIN_SIN_EL
+    fact = 1.0
+    if col_idx >= nf:
+        freq_idx = col_idx - nf
+        if freq_idx < eratio.size:
+            fact = eratio[freq_idx]
+        else:
+            fact = eratio[-1] if eratio.size > 0 else 1.0
+    a = fact * (err[1] if err.size > 1 else err[0])
+    b = fact * (err[2] if err.size > 2 else err[-1])
+    return a * a + (b / s_el) ** 2
+
+
+
+@njit(cache=True)
+def _sdres_core(
+    mode,
+    ns,
+    y,
+    e,
+    x,
+    el,
+    ref_idx,
+    sat_idx,
+    col_idx,
+    mu_arr,
+    lam_ref_arr,
+    lam_sat_arr,
+    is_phase_arr,
+    iono_i_idx,
+    iono_j_idx,
+    amb_i_idx,
+    amb_j_idx,
+    trop_idx,
+    use_trop,
+    use_iono,
+    nav_nx,
+    mapfw_sd,
+    block_idx_arr,
+    block_total,
+    nf,
+    eratio,
+    err,
+):
+    m = ref_idx.size
+    v = np.zeros(m, dtype=np.float64)
+    H = np.zeros((m, nav_nx), dtype=np.float64)
+    Ri = np.zeros(m, dtype=np.float64)
+    Rj = np.zeros(m, dtype=np.float64)
+    nb = np.zeros(block_total, dtype=np.int64) if block_total > 0 else np.zeros(0, dtype=np.int64)
+
+    for k in range(m):
+        ri = ref_idx[k]
+        sj = sat_idx[k]
+        col = col_idx[k]
+        if mode == 0:
+            v[k] = (y[ri, col] - y[ri+ns, col]) - (y[sj, col] - y[sj+ns, col])
+        else:
+            v[k] = y[ri, col] - y[sj, col]
+
+        H[k, 0:3] = -e[ri, :] + e[sj, :]
+
+        if use_trop and trop_idx >= 0:
+            diff_map = mapfw_sd[ri] - mapfw_sd[sj]
+            H[k, trop_idx] = diff_map
+            v[k] -= diff_map * x[trop_idx]
+
+        if use_iono:
+            idx_i = iono_i_idx[k]
+            idx_j = iono_j_idx[k]
+            if idx_i >= 0 and idx_j >= 0:
+                mu_val = mu_arr[k]
+                H[k, idx_i] = +mu_val
+                H[k, idx_j] = -mu_val
+                v[k] -= mu_val * (x[idx_i] - x[idx_j])
+
+        if is_phase_arr[k]:
+            idx_i = amb_i_idx[k]
+            idx_j = amb_j_idx[k]
+            lam_i = lam_ref_arr[k]
+            lam_j = lam_sat_arr[k]
+            if idx_i >= 0:
+                H[k, idx_i] = lam_i
+            if idx_j >= 0:
+                H[k, idx_j] = -lam_j
+            if idx_i >= 0 and idx_j >= 0:
+                v[k] -= lam_i * (x[idx_i] - x[idx_j])
+
+        Ri[k] = _sdres_variance(el[ri], col, nf, eratio, err)
+        Rj[k] = _sdres_variance(el[sj], col, nf, eratio, err)
+
+        if nb.size > 0:
+            blk = block_idx_arr[k]
+            if blk >= 0 and blk < nb.size:
+                nb[blk] += 1
+
+    return v, H, Ri, Rj, nb
+
+
+
+def _sdres_build_plan(obs, sat, el, y, nav):
+    """Build measurement plan arrays for sdres."""
+
+    nf = nav.nf
+    sys_list = list(obs.sig.keys())
+    block_stride = nf * 2
+
+    ref_indices = []
+    sat_indices = []
+    freq_indices = []
+    col_indices = []
+    block_indices = []
+    mu_values = []
+    lam_ref_values = []
+    lam_sat_values = []
+    is_phase_flags = []
+    sig_label_indices = []
+    sig_label_table = []
+    sig_label_map = {}
+
+    ns = len(sat)
+    sat_array = np.asarray(sat, dtype=np.int64)
+    el_arr = np.asarray(el, dtype=np.float64)
+
+    for sys_idx, sys in enumerate(sys_list):
+        sat_idx_list = []
+        for k in range(ns):
+            sys_k, _ = sat2prn(int(sat_array[k]))
+            if sys_k == sys:
+                sat_idx_list.append(k)
+        if len(sat_idx_list) == 0:
+            continue
+        ref_pos = sat_idx_list[int(np.argmax(el_arr[sat_idx_list]))]
+        if sys == uGNSS.GLO:
+            freq0 = obs.sig[sys][uTYP.L][0].frequency(0)
+        else:
+            freq0 = obs.sig[sys][uTYP.L][0].frequency()
+
+        for f in range(block_stride):
+            is_phase = f < nf
+            freq_idx = f if is_phase else f - nf
+            sig_group = obs.sig[sys][uTYP.L] if is_phase else obs.sig[sys][uTYP.C]
+            if freq_idx >= len(sig_group):
+                continue
+            sig = sig_group[freq_idx]
+            block_id = sys_idx * block_stride + f
+
+            for sat_pos in sat_idx_list:
+                if sat_pos == ref_pos:
+                    continue
+                sat_id = int(sat_array[sat_pos])
+                if sat_id <= 0 or sat_id > nav.edt.shape[0]:
+                    continue
+                if np.any(nav.edt[sat_id-1, :] > 0):
+                    continue
+                if y[ref_pos, f] == 0.0 or y[sat_pos, f] == 0.0:
+                    continue
+
+                if sys == uGNSS.GLO:
+                    freq = sig.frequency(nav.glo_ch[sat_id])
+                else:
+                    freq = sig.frequency()
+                mu = -(freq0/freq)**2 if is_phase else +(freq0/freq)**2
+
+                if is_phase:
+                    ref_sat_id = int(sat_array[ref_pos])
+                    if sys == uGNSS.GLO:
+                        lam_ref = sig.wavelength(nav.glo_ch[ref_sat_id])
+                        lam_sat = sig.wavelength(nav.glo_ch[sat_id])
+                    else:
+                        lam_ref = sig.wavelength()
+                        lam_sat = lam_ref
+                else:
+                    lam_ref = 0.0
+                    lam_sat = 0.0
+
+                ref_indices.append(ref_pos)
+                sat_indices.append(sat_pos)
+                freq_indices.append(freq_idx)
+                col_indices.append(f)
+                block_indices.append(block_id)
+                mu_values.append(mu)
+                lam_ref_values.append(lam_ref)
+                lam_sat_values.append(lam_sat)
+                is_phase_flags.append(is_phase)
+                sig_str = sig.str()
+                label_idx = sig_label_map.get(sig_str, -1)
+                if label_idx < 0:
+                    label_idx = len(sig_label_table)
+                    sig_label_map[sig_str] = label_idx
+                    sig_label_table.append(sig_str)
+                sig_label_indices.append(label_idx)
+
+    return (
+        np.asarray(ref_indices, dtype=np.int64),
+        np.asarray(sat_indices, dtype=np.int64),
+        np.asarray(freq_indices, dtype=np.int64),
+        np.asarray(col_indices, dtype=np.int64),
+        np.asarray(block_indices, dtype=np.int64),
+        np.asarray(mu_values, dtype=np.float64),
+        np.asarray(lam_ref_values, dtype=np.float64),
+        np.asarray(lam_sat_values, dtype=np.float64),
+        np.asarray(is_phase_flags, dtype=np.bool_),
+        np.asarray(sys_list, dtype=np.int64),
+        np.asarray(sig_label_indices, dtype=np.int64),
+        sig_label_table,
+    )
 
 class gnssobs():
     """ class for PPP processing """
@@ -725,8 +1040,11 @@ class gnssobs():
             # Receiver/satellite antenna offset
             #
             if self.nav.rcv_ant is None:
-                antrPR = [0.0 for _ in sigsPR]
-                antrCP = [0.0 for _ in sigsCP]
+                # ndarray, not a list: these are summed element-wise with the
+                # trop / iono terms below, where a list would concatenate (or
+                # raise on float + list).
+                antrPR = np.zeros(len(sigsPR))
+                antrCP = np.zeros(len(sigsCP))
             else:
                 antrPR = antModelRx(self.nav, pos, e[i, :], sigsPR, rtype)
                 antrCP = antModelRx(self.nav, pos, e[i, :], sigsCP, rtype)
@@ -753,8 +1071,8 @@ class gnssobs():
 
             else:
 
-                antsPR = [0.0 for _ in sigsPR]
-                antsCP = [0.0 for _ in sigsCP]
+                antsPR = np.zeros(len(sigsPR))
+                antsCP = np.zeros(len(sigsCP))
 
             # Check for invalid values
             #
@@ -808,223 +1126,212 @@ class gnssobs():
 
         nf = self.nav.nf  # number of frequencies (or signals)
         ns = len(el)  # number of satellites
-        nc = len(obs.sig.keys())  # number of constellations
 
         mode = 1 if len(y) == ns else 0  # 0:DD,1:SD
 
-        nb = np.zeros(2*nc*nf, dtype=int)
-
-        Ri = np.zeros(ns*nf*2)
-        Rj = np.zeros(ns*nf*2)
-
-        nv = 0
-        b = 0
-
-        H = np.zeros((ns*nf*2, self.nav.nx))
-        v = np.zeros(ns*nf*2)
+        # v / H / Ri / Rj / nb are all allocated and filled by _sdres_core
+        # below, sized from the measurement plan rather than the ns*nf*2
+        # upper bound the scalar loop used to need.
 
         # Geodetic position
         #
         pos = ecef2pos(x[0:3])
+        pos_arr = np.asarray(pos, dtype=np.float64)
+        doy = time2doy(obs.t)
+        mapfh_sd = np.zeros(ns, dtype=np.float64)
+        mapfw_sd = np.zeros(ns, dtype=np.float64)
+        for idx_sat in range(ns):
+            if el[idx_sat] <= 0.0:
+                continue
+            mf, mw = _tropmapf_dispatch_ppp(float(doy), pos_arr, float(el[idx_sat]), int(self.nav.trpModel))
+            mapfh_sd[idx_sat] = mf
+            mapfw_sd[idx_sat] = mw
 
-        # Loop over constellations
-        #
-        for sys in obs.sig.keys():
+        (
+            ref_idx_arr,
+            sat_idx_arr,
+            freq_idx_arr,
+            col_idx_arr,
+            block_idx_arr,
+            mu_arr,
+            lam_ref_arr,
+            lam_sat_arr,
+            is_phase_arr,
+            sys_list_arr,
+            sig_label_idx_arr,
+            sig_label_table,
+        ) = _sdres_build_plan(obs, sat, el, y, self.nav)
 
-            # Loop over twice the number of frequencies
-            #   first for all carrier-phase observations
-            #   second all pseudorange observations
-            #
-            for f in range(0, nf*2):
-                # Select satellites from one constellation only
-                #
-                idx = self.sysidx(sat, sys)
+        block_stride = nf * 2
+        block_total = int(sys_list_arr.size * block_stride) if sys_list_arr.size > 0 else 0
+        meas_count = col_idx_arr.size
 
-                if len(idx) == 0:
-                    continue
+        if meas_count == 0:
+            R = self.ddcov(np.zeros(0, dtype=np.int64), 0,
+                           np.zeros(0), np.zeros(0), 0)
+            return np.zeros(0), np.zeros((0, self.nav.nx)), R
 
-                # Select reference satellite with highest elevation
-                #
-                i = idx[np.argmax(el[idx])]
+        use_trop = 1 if self.nav.ntrop > 0 else 0
+        trop_idx = self.IT(self.nav.na) if use_trop else -1
 
-                if (f % nf) >= self.nsig_sys(obs, sys):  # slot not carried
-                    continue
+        use_iono = 1 if self.nav.niono > 0 else 0
+        iono_i_idx = -np.ones(meas_count, dtype=np.int64)
+        iono_j_idx = -np.ones(meas_count, dtype=np.int64)
+        if use_iono:
+            for idx_meas in range(meas_count):
+                sat_i_id = sat[ref_idx_arr[idx_meas]]
+                sat_j_id = sat[sat_idx_arr[idx_meas]]
+                iono_i_idx[idx_meas] = self.II(sat_i_id, self.nav.na)
+                iono_j_idx[idx_meas] = self.II(sat_j_id, self.nav.na)
 
-                # Loop over satellites
-                #
-                for j in idx:
+        amb_i_idx = -np.ones(meas_count, dtype=np.int64)
+        amb_j_idx = -np.ones(meas_count, dtype=np.int64)
+        for idx_meas in range(meas_count):
+            if is_phase_arr[idx_meas]:
+                sat_i_id = sat[ref_idx_arr[idx_meas]]
+                sat_j_id = sat[sat_idx_arr[idx_meas]]
+                freq_idx = freq_idx_arr[idx_meas]
+                amb_i_idx[idx_meas] = self.IB(sat_i_id, freq_idx, self.nav.na)
+                amb_j_idx[idx_meas] = self.IB(sat_j_id, freq_idx, self.nav.na)
 
-                    # Slant ionospheric delay reference frequency
-                    #
-                    if sys == uGNSS.GLO:
-                        freq0 = obs.sig[sys][uTYP.L][0].frequency(0)
-                    else:
-                        freq0 = obs.sig[sys][uTYP.L][0].frequency()
+        v, H, Ri, Rj, nb = _sdres_core(
+            int(mode),
+            int(ns),
+            np.ascontiguousarray(y, dtype=np.float64),
+            np.ascontiguousarray(e, dtype=np.float64),
+            np.ascontiguousarray(x, dtype=np.float64),
+            np.ascontiguousarray(el, dtype=np.float64),
+            np.ascontiguousarray(ref_idx_arr, dtype=np.int64),
+            np.ascontiguousarray(sat_idx_arr, dtype=np.int64),
+            np.ascontiguousarray(col_idx_arr, dtype=np.int64),
+            np.ascontiguousarray(mu_arr, dtype=np.float64),
+            np.ascontiguousarray(lam_ref_arr, dtype=np.float64),
+            np.ascontiguousarray(lam_sat_arr, dtype=np.float64),
+            np.ascontiguousarray(is_phase_arr, dtype=np.bool_),
+            np.ascontiguousarray(iono_i_idx, dtype=np.int64),
+            np.ascontiguousarray(iono_j_idx, dtype=np.int64),
+            np.ascontiguousarray(amb_i_idx, dtype=np.int64),
+            np.ascontiguousarray(amb_j_idx, dtype=np.int64),
+            int(trop_idx),
+            int(use_trop),
+            int(use_iono),
+            int(self.nav.nx),
+            np.ascontiguousarray(mapfw_sd, dtype=np.float64),
+            np.ascontiguousarray(block_idx_arr, dtype=np.int64),
+            int(block_total),
+            int(nf),
+            np.ascontiguousarray(self.nav.eratio, dtype=np.float64),
+            np.ascontiguousarray(self.nav.err, dtype=np.float64),
+        )
 
-                    # Select carrier-phase frequency and iono frequency ratio
-                    #
-                    if f < nf:  # carrier
-                        sig = obs.sig[sys][uTYP.L][f]
-                        if sys == uGNSS.GLO:
-                            freq = sig.frequency(self.nav.glo_ch[sat[j]])
-                        else:
-                            freq = sig.frequency()
-                        mu = -(freq0/freq)**2
-                    else:  # code
-                        sig = obs.sig[sys][uTYP.C][f % nf]
-                        if sys == uGNSS.GLO:
-                            freq = sig.frequency(self.nav.glo_ch[sat[j]])
-                        else:
-                            freq = sig.frequency()
-                        mu = +(freq0/freq)**2
+        for idx_meas in range(meas_count):
+            if is_phase_arr[idx_meas]:
+                freq_idx = int(freq_idx_arr[idx_meas])
+                sat_i_id = sat[ref_idx_arr[idx_meas]] - 1
+                sat_j_id = sat[sat_idx_arr[idx_meas]] - 1
+                if 0 <= sat_i_id < self.nav.vsat.shape[0]:
+                    self.nav.vsat[sat_i_id, freq_idx] = 1
+                if 0 <= sat_j_id < self.nav.vsat.shape[0]:
+                    self.nav.vsat[sat_j_id, freq_idx] = 1
 
-                    # Skip edited observations
-                    #
-                    if np.any(self.nav.edt[sat[j]-1, :] > 0):
+        if self.nav.monlevel > 2:
+            if use_trop:
+                for idx_meas in range(meas_count):
+                    diff_map = mapfw_sd[ref_idx_arr[idx_meas]] - mapfw_sd[sat_idx_arr[idx_meas]]
+                    self.nav.fout.write(
+                        fmt_ztd.format(
+                            time2str(obs.t),
+                            trop_idx,
+                            trop_idx,
+                            diff_map,
+                            x[trop_idx],
+                            np.sqrt(self.nav.P[trop_idx, trop_idx]),
+                        )
+                    )
+            if use_iono:
+                for idx_meas in range(meas_count):
+                    label = sig_label_table[sig_label_idx_arr[idx_meas]]
+                    idx_i = iono_i_idx[idx_meas]
+                    idx_j = iono_j_idx[idx_meas]
+                    if idx_i < 0 or idx_j < 0:
                         continue
-
-                    # Skip invalid measurements
-                    # NOTE: this additional test is included here,
-                    #       since biases or antenna offsets may not be
-                    #       available and this zdres()
-                    #       returns zero observation residuals!
-                    #
-                    if y[i, f] == 0.0 or y[j, f] == 0.0:
+                    sat_i_id = sat[ref_idx_arr[idx_meas]]
+                    sat_j_id = sat[sat_idx_arr[idx_meas]]
+                    self.nav.fout.write(
+                        fmt_ion.format(
+                            time2str(obs.t),
+                            sat2id(sat_i_id),
+                            sat2id(sat_j_id),
+                            label,
+                            idx_i,
+                            idx_j,
+                            mu_arr[idx_meas],
+                            x[idx_i],
+                            x[idx_j],
+                            np.sqrt(self.nav.P[idx_i, idx_i]),
+                            np.sqrt(self.nav.P[idx_j, idx_j]),
+                        )
+                    )
+                for idx_meas in range(meas_count):
+                    if not is_phase_arr[idx_meas]:
                         continue
-
-                    # Skip reference satellite i
-                    #
-                    if i == j:
+                    idx_i = amb_i_idx[idx_meas]
+                    idx_j = amb_j_idx[idx_meas]
+                    if idx_i < 0 or idx_j < 0:
                         continue
+                    label = sig_label_table[sig_label_idx_arr[idx_meas]]
+                    sat_i_id = sat[ref_idx_arr[idx_meas]]
+                    sat_j_id = sat[sat_idx_arr[idx_meas]]
+                    self.nav.fout.write(
+                        fmt_amb.format(
+                            time2str(obs.t),
+                            sat2id(sat_i_id),
+                            sat2id(sat_j_id),
+                            label,
+                            idx_i,
+                            idx_j,
+                            lam_ref_arr[idx_meas],
+                            lam_sat_arr[idx_meas],
+                            x[idx_i],
+                        x[idx_j],
+                        np.sqrt(self.nav.P[idx_i, idx_i]),
+                        np.sqrt(self.nav.P[idx_j, idx_j]),
+                    )
+                )
 
-                    if mode == 0:  # DD
-                        v[nv] = (y[i, f]-y[i+ns, f])-(y[j, f]-y[j+ns, f])
-                    else:
-                        #  Single-difference measurement
-                        #
-                        v[nv] = y[i, f] - y[j, f]
+        if self.nav.monlevel > 1:
+            for idx_meas in range(meas_count):
+                label = sig_label_table[sig_label_idx_arr[idx_meas]]
+                sat_i_id = sat[ref_idx_arr[idx_meas]]
+                sat_j_id = sat[sat_idx_arr[idx_meas]]
+                self.nav.fout.write(
+                    fmt_res.format(
+                        time2str(obs.t),
+                        sat2id(sat_i_id),
+                        sat2id(sat_j_id),
+                        label,
+                        idx_meas,
+                        v[idx_meas],
+                        np.sqrt(Ri[idx_meas]),
+                        np.sqrt(Rj[idx_meas]),
+                    )
+                )
 
-                    # SD line-of-sight vectors
-                    #
-                    H[nv, 0:3] = -e[i, :] + e[j, :]
-
-                    if self.nav.ntrop > 0:  # tropo is estimated
-
-                        # SD troposphere
-                        #
-                        _, mapfwi = tropmapf(
-                            obs.t, pos, el[i], model=self.nav.trpModel)
-                        _, mapfwj = tropmapf(
-                            obs.t, pos, el[j], model=self.nav.trpModel)
-
-                        idx_i = self.IT(self.nav.na)
-                        H[nv, idx_i] = mapfwi - mapfwj
-                        v[nv] -= (mapfwi - mapfwj)*x[idx_i]
-
-                        if self.nav.monlevel > 2:
-                            self.nav.fout.write(
-                                fmt_ztd
-                                .format(time2str(obs.t), idx_i, idx_i,
-                                        (mapfwi - mapfwj),
-                                        x[self.IT(self.nav.na)],
-                                        np.sqrt(self.nav.P[
-                                            self.IT(self.nav.na),
-                                            self.IT(self.nav.na)])))
-
-                    if self.nav.niono > 0:  # iono is estimated
-
-                        # SD ionosphere
-                        #
-                        idx_i = self.II(sat[i], self.nav.na)
-                        idx_j = self.II(sat[j], self.nav.na)
-                        H[nv, idx_i] = +mu
-                        H[nv, idx_j] = -mu
-                        v[nv] -= mu*(x[idx_i] - x[idx_j])
-
-                        if self.nav.monlevel > 2:
-                            self.nav.fout.write(
-                                fmt_ion
-                                .format(time2str(obs.t),
-                                        sat2id(sat[i]), sat2id(sat[j]),
-                                        sig, idx_i, idx_j, mu,
-                                        x[idx_i], x[idx_j],
-                                        np.sqrt(self.nav.P[idx_i, idx_i]),
-                                        np.sqrt(self.nav.P[idx_j, idx_j])))
-
-                    # SD ambiguity
-                    #
-                    if f < nf:  # carrier-phase
-
-                        idx_i = self.IB(sat[i], f, self.nav.na)
-                        idx_j = self.IB(sat[j], f, self.nav.na)
-
-                        if sys == uGNSS.GLO:
-                            lami = sig.wavelength(self.nav.glo_ch[sat[i]])
-                            lamj = sig.wavelength(self.nav.glo_ch[sat[j]])
-                        else:
-                            lami = sig.wavelength()
-                            lamj = lami
-
-                        H[nv, idx_i] = +lami
-                        H[nv, idx_j] = -lamj
-                        v[nv] -= lami*(x[idx_i] - x[idx_j])
-
-                        # measurement variance
-                        Ri[nv] = self.varerr(self.nav, el[i], f)
-                        # measurement variance
-                        Rj[nv] = self.varerr(self.nav, el[j], f)
-
-                        self.nav.vsat[sat[i]-1, f] = 1
-                        self.nav.vsat[sat[j]-1, f] = 1
-
-                        if self.nav.monlevel > 2:
-                            self.nav.fout.write(
-                                fmt_amb
-                                .format(time2str(obs.t),
-                                        sat2id(sat[i]), sat2id(sat[j]),
-                                        sig, idx_i, idx_j, lami, lamj,
-                                        x[idx_i], x[idx_j],
-                                        np.sqrt(self.nav.P[idx_i, idx_i]),
-                                        np.sqrt(self.nav.P[idx_j, idx_j])))
-
-                    else:  # pseudorange
-
-                        # measurement variance
-                        Ri[nv] = self.varerr(self.nav, el[i], f)
-                        # measurement variance
-                        Rj[nv] = self.varerr(self.nav, el[j], f)
-
-                    if self.nav.monlevel > 1:
-                        self.nav.fout.write(
-                            fmt_res
-                            .format(time2str(obs.t),
-                                    sat2id(sat[i]), sat2id(sat[j]), sig,
-                                    nv, v[nv],
-                                    np.sqrt(Ri[nv]), np.sqrt(Rj[nv])))
-
-                    nb[b] += 1  # counter for single-differences per signal
-                    nv += 1  # counter for single-difference observations
-
-                b += 1  # counter for signal (pseudorange+carrier-phase)
-
-        v = np.resize(v, nv)
-        H = np.resize(H, (nv, self.nav.nx))
-        R = self.ddcov(nb, b, Ri, Rj, nv)
+        R = self.ddcov(nb, len(nb), Ri, Rj, meas_count)
 
         return v, H, R
 
     def ddcov(self, nb, n, Ri, Rj, nv):
-        """ DD measurement error covariance """
-        R = np.zeros((nv, nv))
-        k = 0
-        for b in range(n):
-            for i in range(nb[b]):
-                for j in range(nb[b]):
-                    R[k+i, k+j] = Ri[k+i]
-                    if i == j:
-                        R[k+i, k+j] += Rj[k+i]
-            k += nb[b]
-        return R
+        """ DD measurement error covariance
+
+        ``n`` is kept for call compatibility; only the first ``n`` block
+        sizes of ``nb`` are used, as before.
+        """
+        nb_arr = np.ascontiguousarray(nb[:n], dtype=np.int64)
+        return _ddcov_numpy(nb_arr,
+                            np.ascontiguousarray(Ri, dtype=np.float64),
+                            np.ascontiguousarray(Rj, dtype=np.float64),
+                            int(nv))
 
     def kfupdate(self, x, P, H, v, R):
         """
@@ -1080,45 +1387,21 @@ class gnssobs():
 
     def ddidx(self, nav, sat):
         """ index for SD to DD transformation matrix D """
-        nb = 0
-        n = uGNSS.MAXSAT
-        na = nav.na
-        ix = np.zeros((n, 2), dtype=int)
-        nav.fix = np.zeros((n, nav.nf), dtype=int)
-        for m in range(uGNSS.GNSSMAX):
-            k = na
-            for f in range(nav.nf):
-                for i in range(k, k+n):
-                    sat_i = i-k+1
-                    sys, _ = sat2prn(sat_i)
-                    if (sys != m):
-                        continue
-                    if sat_i not in sat or nav.x[i] == 0.0 \
-                       or nav.vsat[sat_i-1, f] == 0:
-                        continue
-                    if nav.el[sat_i-1] >= nav.elmaskar:
-                        nav.fix[sat_i-1, f] = 2
-                        break
-                    else:
-                        nav.fix[sat_i-1, f] = 1
-                for j in range(k, k+n):
-                    sat_j = j-k+1
-                    sys, _ = sat2prn(sat_j)
-                    if (sys != m):
-                        continue
-                    if i == j or sat_j not in sat or nav.x[j] == 0.0 \
-                       or nav.vsat[sat_j-1, f] == 0:
-                        continue
-                    if nav.el[sat_j-1] >= nav.elmaskar:
-                        ix[nb, :] = [i, j]
-                        nb += 1
-                        nav.fix[sat_j-1, f] = 2
-                k += n
-        ix = np.resize(ix, (nb, 2))
+        sat_arr = np.ascontiguousarray(sat, dtype=np.int32)
+        ix, fix = _ddidx_core(
+            sat_arr, nav.x, nav.vsat, nav.el, SAT_SYS_ARR,
+            nav.na, nav.nf,
+            int(uGNSS.MAXSAT), int(uGNSS.GNSSMAX), nav.elmaskar)
+        nav.fix = fix
         return ix
 
-    def resamb_lambda(self, sat, armode=1, P0=0.995):
-        """ resolve integer ambiguity using LAMBDA method """
+    def resamb_lambda(self, sat, parmode=1, P0=0.995):
+        """ resolve integer ambiguity using LAMBDA method
+
+        parmode selects the LAMBDA search (1: full ILS, 2: partial AR); it is
+        nav.parmode, not nav.armode -- the latter switches AR on/off and
+        fix-and-hold.
+        """
         nx = self.nav.nx
         na = self.nav.na
         xa = np.zeros(na)
@@ -1135,8 +1418,8 @@ class gnssobs():
         Qab = self.nav.P[0:na, ix[:, 0]]-self.nav.P[0:na, ix[:, 1]]
 
         # MLAMBDA ILS
-        b, s, nfix, Ps = mlambda(y, Qb, armode=armode, P0=P0)
-        if nfix > 0 and (armode == 2 or s[0] <= 0.0 or
+        b, s, nfix, Ps = mlambda(y, Qb, parmode=parmode, P0=P0)
+        if nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
                          s[1]/s[0] >= self.nav.thresar):
             self.nav.xa = self.nav.x[0:na].copy()
             self.nav.Pa = self.nav.P[0:na, 0:na].copy()
@@ -1149,7 +1432,7 @@ class gnssobs():
             # restore SD ambiguity
             xa = self.restamb(bias, nb)
 
-        elif armode == 2 and nfix == 0:
+        elif parmode == 2 and nfix == 0:
             nb = 0
             if self.nav.monlevel > 0:
                 self.nav.fout.write(
@@ -1352,10 +1635,14 @@ class gnssobs():
                     continue
 
             # cycle-slip detection by geometry-free combination
-            if obs.L.shape[1] > 1:
+            # obs.L is nf wide for every system, so the array width alone
+            # does not mean this constellation selected two bands: a
+            # single-band system (e.g. GLONASS L1 only in an nf=2 setup)
+            # has just one entry in sigsCP and cannot form a GF combination.
+            if obs.L.shape[1] > 1 and len(sigsCP) > 1:
                 L1R, L2R = obs.L[j, 0:2]
                 sys, _ = sat2prn(sat_i)
-                sig1, sig2 = obs.sig[sys][uTYP.L][0:2]
+                sig1, sig2 = sigsCP[0:2]
                 if sys == uGNSS.GLO:
                     # FDMA channel may be unknown (no GLO eph decoded);
                     # lam=0 keeps the GF test a no-op instead of KeyError.
@@ -1442,14 +1729,17 @@ class gnssobs():
             #
             # index of valid sats in obs.sat
             iu = np.where(np.isin(obs.sat, sat_ed))[0]
-            ns = len(iu)
-            y = np.zeros((ns, self.nav.nf*2))
-            e = np.zeros((ns, 3))
 
             obs_ = obs
         else:  # RTK
-            y, e, iu, obs_ = self.base_process(obs, obsb, rs, dts, svh)
-            ns = len(iu)
+            _, _, iu, obs_ = self.base_process(obs, obsb, rs, dts, svh)
+
+        # y / e are filled from zdres below; allocate them here so the RTK
+        # path does not depend on base_process returning buffers (the DD-only
+        # rtkpos override returns None for both).
+        ns = len(iu)
+        y = np.zeros((ns, self.nav.nf*2))
+        e = np.zeros((ns, 3))
 
         self.nav.nsat[2] = ns
 

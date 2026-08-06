@@ -4,5 +4,6 @@ galois
 crccheck
 notebook
 numpy
+numba
 matplotlib
 cartopy
