@@ -87,10 +87,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
   RTK is supported through `rtkpos.prepare_double_difference_measurements`,
   which the GTSAM examples use and which is untouched. `process` keeps
-  serving PPP / PPP-RTK (`ppp_has.py`, `ppp_bds.py`, `ppprtk_clas.py`,
-  `tutorials/ppp.ipynb`), so `udstate`, `zdres`, `sdres`, `kfupdate` and
-  `resamb_lambda` all stay. Recover the zdres-based `base_process` from
-  `dev` if the EKF RTK loop is ever wanted back.
+  serving PPP / PPP-RTK (`examples/ppp_has.py`, `examples/ppp_bds.py`,
+  `examples/ppprtk_clas.py`), so `udstate`, `zdres`, `sdres`, `kfupdate`
+  and `resamb_lambda` all stay. Recover the zdres-based `base_process`
+  from `dev` if the EKF RTK loop is ever wanted back.
+
+- `tutorials/basic.ipynb`, which was the EKF RTK path's only caller. It had
+  already stopped working for unrelated reasons: it imports `cssrlib.pntpos`
+  and `cssrlib.plot`, both deleted with the minimal core. Nothing references
+  it and CI does not execute it. `tutorials/cssrlib.ipynb` is unaffected —
+  it clones upstream `hirokawa/cssrlib` rather than using this tree, which
+  is also where the README's Colab badge points.
+
+  Still shipped but broken against this branch's module set, for the same
+  minimal-core reason: `tutorials/auth.ipynb` (needs `osnma`, `qznma`),
+  `tutorials/ewss.ipynb` (needs `ewss`) and `tutorials/ppp.ipynb` (needs
+  `plot`, `rtcm`, and `pppssr` under its pre-rename name).
 
 - NOTE: the two entries below describe the minimal-core state that commit
   20c0df1 superseded when it re-added the SSR/CSSR, `peph`, `ppp` and
