@@ -15,13 +15,13 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "scipy",
     "bitstruct",
     "galois",
-    "crccheck",
-    "notebook",
     "numpy",
     "numba",
+    # Nothing imports scipy directly, but Numba's np.linalg support binds to
+    # SciPy's BLAS/LAPACK at runtime; without it the njit'd geodist aborts
+    # with "Specified LAPACK function could not be found".
+    "scipy",
     "matplotlib",
-    "cartopy",
 ]

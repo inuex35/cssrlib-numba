@@ -27,12 +27,6 @@ Additional python packages are required as prerequisites and can be installed vi
 pip install -r requirements.txt
 ```
 
-If the installation of `cartopy` fails, try installing `libgeos++-dev` first.
-
-```
-sudo apt-get install libgeos++-dev
-```
-
 *NOTE*: the module `pysolid` is used for the computation of solid Earth tides. It contains a hard-coded leap second table with an expiration date, which is set to the next possible injection date of a leap second at the time of the last update. The table is frequently updated by the package maintainers. The following warning is issed when the expiration date is exceeded:
 
 > Mild Warning -- time crossed leap second table boundaries.  Boundary edge value used instead
