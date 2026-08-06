@@ -68,20 +68,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   convenience method `rnxdec.autoSignals(decb=None, max_freq=2)` which detects
   and applies the signals in one call.
 
-### Known issues
-
-- The EKF RTK loop (`gnssobs.process` with `obsb`) does not work. `process`
-  and its `udstate`/`kfupdate` machinery came back with the CLAS PPP-RTK
-  port, but `rtkpos.base_process` is still the minimal core's DD-only
-  override: it returns plain rover-base single differences of the raw
-  observations, whereas the EKF expects rover-minus-base `zdres` residuals.
-  Feeding one into the other leaves the normal matrix singular
-  (`kfupdate` -> `LinAlgError`). The DD-only entry point
-  (`prepare_double_difference_measurements`, used by the GTSAM examples) is
-  unaffected and is the supported path. Restoring the EKF needs the
-  zdres-based `base_process` recovered from `dev`.
-
 ### Removed
+
+- The EKF RTK path: the `obsb` parameter and RTK branch of
+  `gnssobs.process`, the `gnssobs.base_process` stub, and the
+  `rtkpos.base_process` compatibility alias. It could not work and had no
+  working caller. `process` and its `udstate`/`kfupdate` machinery came back
+  with the CLAS PPP-RTK port, but `rtkpos.base_process` remained the minimal
+  core's DD-only override, returning plain rover-base single differences of
+  the raw observations where the EKF expects rover-minus-base `zdres`
+  residuals; feeding one into the other left the normal matrix singular
+  (`kfupdate` -> `LinAlgError`). Its only caller was `tutorials/basic.ipynb`,
+  which cannot import on this branch anyway (it needs `cssrlib.pntpos` and
+  `cssrlib.plot`, both removed with the minimal core) and is not run by CI —
+  `notebook-ci.yml` executes GTSAM's upstream `RtkAndPppExample.ipynb`.
+  `process(obs, obsb=...)` now raises `TypeError` instead of failing deep
+  inside the filter.
+
+  RTK is supported through `rtkpos.prepare_double_difference_measurements`,
+  which the GTSAM examples use and which is untouched. `process` keeps
+  serving PPP / PPP-RTK (`ppp_has.py`, `ppp_bds.py`, `ppprtk_clas.py`,
+  `tutorials/ppp.ipynb`), so `udstate`, `zdres`, `sdres`, `kfupdate` and
+  `resamb_lambda` all stay. Recover the zdres-based `base_process` from
+  `dev` if the EKF RTK loop is ever wanted back.
 
 - NOTE: the two entries below describe the minimal-core state that commit
   20c0df1 superseded when it re-added the SSR/CSSR, `peph`, `ppp` and

@@ -147,15 +147,6 @@ class rtkpos(gnssobs):
         obs_.P = self._build_frequency_diff(obs.P[iu, :], obsb.P[ir, :])
         return iu, obs_
 
-    def base_process(self, obs, obsb, rs, dts, svh,
-                     rsb=None, vsb=None, dtsb=None, svhb=None):
-        """Deprecated alias kept for compatibility: forwards to the DD-only
-        path. The undifferenced (zdres-based) variant was removed with the
-        minimal core; ``y``/``e`` are returned as ``None``."""
-        iu, obs_ = self.single_differences(
-            obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb)
-        return None, None, iu, obs_
-
     def _common_indices(self, obs, obsb, sat_ed):
         ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
         iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]

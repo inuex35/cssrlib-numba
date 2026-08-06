@@ -1692,14 +1692,15 @@ class gnssobs():
 
         return np.array(sat, dtype=int)
 
-    def base_process(self, obs, obsb, rs, dts, svh):
-        """ processing for base station in RTK
-            (implemented in rtkpos) """
-        return None, None, None, None
-
-    def process(self, obs, cs=None, orb=None, bsx=None, obsb=None):
+    def process(self, obs, cs=None, orb=None, bsx=None):
         """
-        PPP/PPP-RTK/RTK positioning
+        PPP/PPP-RTK positioning
+
+        RTK is not driven from here. The EKF's rover-minus-base residuals
+        were removed with the minimal core, leaving this method's old
+        ``obsb`` branch without a base ``zdres`` to difference against; use
+        ``rtkpos.prepare_double_difference_measurements`` instead, which is
+        what the GTSAM examples do.
         """
 
         # Skip empty epochs
@@ -1724,19 +1725,13 @@ class gnssobs():
         #
         sat_ed = self.qcedit(obs, rs, dts, svh)
 
-        if obsb is None:  # PPP/PPP-RTK
-            # Select satellites having passed quality control
-            #
-            # index of valid sats in obs.sat
-            iu = np.where(np.isin(obs.sat, sat_ed))[0]
+        # Select satellites having passed quality control
+        #
+        # index of valid sats in obs.sat
+        iu = np.where(np.isin(obs.sat, sat_ed))[0]
+        obs_ = obs
 
-            obs_ = obs
-        else:  # RTK
-            _, _, iu, obs_ = self.base_process(obs, obsb, rs, dts, svh)
-
-        # y / e are filled from zdres below; allocate them here so the RTK
-        # path does not depend on base_process returning buffers (the DD-only
-        # rtkpos override returns None for both).
+        # y / e are filled from zdres below.
         ns = len(iu)
         y = np.zeros((ns, self.nav.nf*2))
         e = np.zeros((ns, 3))
