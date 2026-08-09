@@ -1,5 +1,7 @@
 include src/cssrlib/data/*.21?
 include src/cssrlib/test/test*.py
+include src/cssrlib/test/golden_harness.py
+include src/cssrlib/test/golden/*.npz
 
 graft docs
 prune docs/build

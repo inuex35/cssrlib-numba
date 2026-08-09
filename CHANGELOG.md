@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - `mlambda` was silently reverted to the upstream pure-Python implementation
   by 20c0df1 ("port full PPP-RTK (CLAS) onto the minimal core"), which
   described the change only as "unified on the full implementation". That
-  discarded the 8 Numba kernels, the RTKLIB `LOOPMAX` search caps and the
+  discarded the 7 Numba kernels, the RTKLIB `LOOPMAX` search caps and the
   `LambdaError` exception. All three are restored. `ldldecom` again raises
   `LambdaError` (a `numpy.linalg.LinAlgError` subclass) instead of
   `SystemExit`, so an external estimator embedding LAMBDA can catch a
