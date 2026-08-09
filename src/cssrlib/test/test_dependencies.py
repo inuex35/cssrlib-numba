@@ -20,8 +20,11 @@ LAYER = {
     # L0 numeric kernels: constants and arrays in, arrays out
     "constants": 0, "geometry": 0, "atmosphere": 0, "orbit": 0,
     "mlambda": 0, "ssr_types": 0,
-    # L1 types and units
-    "gnss": 1,
+    # L1 types and units. gnss is a facade over the five below; they may
+    # import one another (signal resolves a constellation via sat, types
+    # holds gtime_t from time), so they share a layer.
+    "gnss_enums": 1, "gnss_sat": 1, "gnss_signal": 1, "gnss_time": 1,
+    "gnss_types": 1, "gnss_coords": 1, "gnss": 1,
     # L2 data model. glonass sits here rather than with the other kernels
     # because its orbit integration is expressed in gtime_t.
     "state": 2, "config": 2, "glonass": 2,
@@ -83,14 +86,24 @@ def test_broadcast_rtk_does_not_load_the_ssr_decoder():
     assert not loaded, f"rtk pulled in SSR decoders: {loaded}"
 
 
-def test_ephemeris_stays_small():
-    """satposs needs the SSR vocabulary, not the SSR decoder."""
+def test_ephemeris_pulls_in_no_products_or_decoders():
+    """satposs needs the SSR vocabulary, not the SSR decoder.
+
+    Counting modules would only measure how finely gnss happens to be
+    split, so this names what must stay out instead.
+    """
     code = ("import cssrlib.ephemeris, sys; "
-            "print(len([m for m in sys.modules if m.startswith('cssrlib')]))")
+            "print(','.join(sorted(m for m in sys.modules "
+            "if m.startswith('cssrlib.'))))")
     out = subprocess.run([sys.executable, "-c", code],
                          capture_output=True, text=True, check=True)
-    assert int(out.stdout.strip()) <= 10, (
-        "ephemeris's import closure grew; check for a new upward import")
+    loaded = set(out.stdout.strip().split(","))
+
+    forbidden = {"cssrlib.cssrlib", "cssrlib.peph", "cssrlib.antex",
+                 "cssrlib.peph_sp3", "cssrlib.bsx", "cssrlib.rinex_reader",
+                 "cssrlib.gnssobs", "cssrlib.residuals"}
+    assert not (loaded & forbidden), (
+        f"ephemeris pulled in {sorted(loaded & forbidden)}")
 
 
 def test_ssr_types_has_no_cssrlib_dependencies():
