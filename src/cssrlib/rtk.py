@@ -9,6 +9,7 @@ from copy import copy, deepcopy
 from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST, uTideModel
 from cssrlib.gnss import Nav, ReceiverState
+from cssrlib.config import rtk_config
 
 
 class DDMeasurements(dict):
@@ -63,13 +64,16 @@ class DDMeasurements(dict):
 class rtkpos(gnssobs):
     """ class for RTK processing """
 
-    def __init__(self, nav, pos0=np.zeros(3), logfile=None, base_nav=None):
-        """ initialize variables for PPP-RTK """
+    def __init__(self, nav, pos0=np.zeros(3), logfile=None, base_nav=None,
+                 cfg=None):
+        """ initialize variables for RTK
 
-        # trop, iono from cssr
-        # phase windup model is local/regional
+        Everything that used to distinguish this class from ppprtkpos is now
+        in :func:`cssrlib.config.rtk_config`; pass ``cfg`` to adjust it.
+        """
         super().__init__(nav=nav, pos0=pos0, logfile=logfile,
-                         trop_opt=0, iono_opt=0, phw_opt=0)
+                         cfg=rtk_config(nf=nav.nf, pmode=nav.pmode)
+                         if cfg is None else cfg)
 
         # The base is a second receiver, not a second engine: it needs its
         # own per-receiver bookkeeping (edt / el / gf / slip) and nothing
@@ -92,21 +96,6 @@ class rtkpos(gnssobs):
             self.base_nav.rcv = self.base_rcv
             self._override_nav(self.base_nav, base_nav)
 
-        self.nav.eratio = np.ones(self.nav.nf)*50  # [-] factor
-        self.nav.err = [0, 0.01, 0.005]/np.sqrt(2)  # [m] sigma
-        self.nav.sig_p0 = 30.0  # [m]
-        self.nav.thresar = 2.0  # AR acceptance threshold
-        self.nav.armode = 1     # AR is enabled
-        self.nav.maxtdiff = 30.0  # [s] max age of base obs (RTKLIB maxtdiff)
-        self.nav.rtklib_mode = False
-        self.nav.excsat = 0        # last excluded satellite (round-robin)
-        self.nav.arfilter = True   # drop newly-acquired sats that hurt ratio
-        self.nav.minfixsats = 4    # minimum sats required to attempt AR
-
-        # Solid Earth tides cancel in the rover-base double difference at the
-        # short baselines RTK targets, so they are disabled (the tide model
-        # was removed with the minimal core).
-        self.nav.tidecorr = uTideModel.NONE
         if self.base_nav is not self.nav:
             self.base_nav.tidecorr = uTideModel.NONE
 

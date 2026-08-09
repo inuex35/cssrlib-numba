@@ -9,7 +9,7 @@ from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
 from cssrlib.gnss import SAT_SYS_ARR
 from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, geodist, satazel
-from cssrlib.gnss import time2str, timediff, gpst2utc, tropmapf, uIonoModel
+from cssrlib.gnss import time2str, timediff, gpst2utc, tropmapf
 from cssrlib.gnss import time2doy
 from cssrlib.atmosphere import tropmapf_niell
 from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
@@ -346,35 +346,25 @@ class gnssobs():
     nav = None
     VAR_HOLDAMB = 0.001
 
-    def __init__(self, nav, pos0=np.zeros(3),
-                 logfile=None, trop_opt=1, iono_opt=1, phw_opt=1):
-        """ initialize variables for PPP """
+    def __init__(self, nav, pos0=np.zeros(3), logfile=None, cfg=None,
+                 trop_opt=1, iono_opt=1, phw_opt=1):
+        """ initialize variables for PPP
+
+        ``cfg`` is a :class:`~cssrlib.gnss.ProcConfig`, normally built by one
+        of the factories in :mod:`cssrlib.config`. It replaces the config
+        already on ``nav``. The ``trop_opt`` / ``iono_opt`` / ``phw_opt``
+        keywords are the older way of saying the same thing and still work
+        when no ``cfg`` is given.
+        """
+        from cssrlib.config import base_config
 
         self.nav = nav
 
-        # Number of frequencies (actually signals!)
-        #
-        self.nav.ephopt = 2  # SSR-APC
-
-        # Select tropospheric model
-        #
-        self.nav.trpModel = uTropoModel.SAAST
-
-        # Select iono model
-        #
-        self.nav.ionoModel = uIonoModel.KLOBUCHAR
-
-        # 0: use trop-model, 1: estimate, 2: use cssr correction
-        self.nav.trop_opt = trop_opt
-
-        # 0: use iono-model, 1: estimate, 2: use cssr correction
-        self.nav.iono_opt = iono_opt
-
-        # 0: none, 1: full model, 2: local/regional model
-        self.nav.phw_opt = phw_opt
-
-        # carrier smoothing
-        self.nav.csmooth = False
+        if cfg is None:
+            cfg = base_config(nf=nav.nf, pmode=nav.pmode,
+                              trop_opt=trop_opt, iono_opt=iono_opt,
+                              phw_opt=phw_opt)
+        self._apply_config(cfg)
 
         # Position (+ optional velocity), zenith tropo delay and
         # slant ionospheric delay states
@@ -397,45 +387,10 @@ class gnssobs():
         self.nav.phw = np.zeros(uGNSS.MAXSAT)
         self.nav.el = np.zeros(uGNSS.MAXSAT)
 
-        # Parameters for PPP
-        #
-        # Observation noise parameters
-        #
-        self.nav.eratio = np.ones(self.nav.nf)*50  # [-] factor
-        self.nav.err = [0, 0.01, 0.005]/np.sqrt(2)  # [m] sigma
-
-        # Initial sigma for state covariance
-        #
-        self.nav.sig_p0 = 100.0   # [m]
-        self.nav.sig_v0 = 1.0     # [m/s]
-        self.nav.sig_ztd0 = 0.1  # [m]
-        self.nav.sig_ion0 = 10.0  # [m]
-        self.nav.sig_n0 = 30.0    # [cyc]
-
-        # Process noise sigma
-        #
-        if self.nav.pmode == 0:
-            self.nav.sig_qp = 100.0/np.sqrt(1)     # [m/sqrt(s)]
-            self.nav.sig_qv = None
-        else:
-            self.nav.sig_qp = 0.01/np.sqrt(1)      # [m/sqrt(s)]
-            self.nav.sig_qv = 1.0/np.sqrt(1)       # [m/s/sqrt(s)]
-        self.nav.sig_qztd = 0.05/np.sqrt(3600)     # [m/sqrt(s)]
-        self.nav.sig_qion = 10.0/np.sqrt(1)        # [m/s/sqrt(s)]
-        self.nav.sig_qb = 1e-4/np.sqrt(1)          # [m/s/sqrt(s)]
-
-        # Processing options
-        #
-        self.nav.tidecorr = uTideModel.IERS2010
-        # self.nav.tidecorr = uTideModel.SIMPLE
-        self.nav.thresar = 3.0  # AR acceptance threshold
-        # 0:float-ppp,1:continuous,2:instantaneous,3:fix-and-hold
-        self.nav.armode = 0
-        self.nav.elmaskar = np.deg2rad(20.0)  # elevation mask for AR
-        self.nav.elmin = np.deg2rad(15.0)
-
-        self.nav.parmode = 2  # 1: normal, 2: PAR
-        self.nav.par_P0 = 0.995  # probability of sussefull AR
+        # Observation noise, initial sigmas, process noise and the
+        # processing options all now come from cfg (see cssrlib.config);
+        # they used to be assigned here and then partly re-assigned by
+        # whichever subclass had been instantiated.
 
         # Initial state vector
         #
@@ -499,6 +454,29 @@ class gnssobs():
             self.nav.monlevel = 0
         else:
             self.nav.fout = open(logfile, 'w')
+
+    def _apply_config(self, cfg):
+        """Merge a configuration into ``nav``, letting the caller win.
+
+        Callers routinely configure ``nav`` before handing it to an engine --
+        ``nav.rb = <base station ECEF>`` above all. Replacing ``nav.cfg``
+        outright would silently discard that, so each field is only taken
+        from ``cfg`` where the caller has left ``nav`` at the stock default.
+        Anything explicitly set survives.
+        """
+        from cssrlib.gnss import ProcConfig
+
+        stock = ProcConfig(nf=self.nav.nf)
+        target = self.nav.cfg
+
+        for field, value in vars(cfg).items():
+            try:
+                untouched = bool(np.all(getattr(target, field)
+                                        == getattr(stock, field)))
+            except Exception:
+                untouched = getattr(target, field) is getattr(stock, field)
+            if untouched:
+                setattr(target, field, value)
 
     def valpos(self, v, R, thres=4.0):
         """ post-fit residual test """

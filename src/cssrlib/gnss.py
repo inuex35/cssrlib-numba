@@ -843,10 +843,29 @@ class ProcConfig():
         self.rb = [0, 0, 0]  # base station position in ECEF [m]
         self.baseline = 0    # baseline length [km]
 
-        # Observation error budget; the engine overwrites these per mode.
+        # Observation error budget.
         self.eratio = np.ones(nf) * 50
         self.err = [0, 0.003, 0.003]
-        self.sig_p0 = 30.0
+
+        # Initial state standard deviations.
+        # NOTE sig_p0 is 100 m, not the 30 m that rtkpos and ppprtkpos used
+        # to assign: they set it *after* gnssobs.__init__ had already built
+        # P from it, and nothing reads sig_p0 again, so the 30 never took
+        # effect. The value here is what the filter actually starts with;
+        # changing it to 30 is a tuning decision, not a refactor.
+        self.sig_p0 = 100.0    # [m]
+        self.sig_v0 = 1.0      # [m/s]
+        self.sig_ztd0 = 0.1    # [m]
+        self.sig_ion0 = 10.0   # [m]
+        self.sig_n0 = 30.0     # [cyc]
+
+        # Process noise standard deviations; sig_qp / sig_qv depend on pmode
+        # and are set by the configuration factories.
+        self.sig_qp = 0.01 / np.sqrt(1)          # [m/sqrt(s)]
+        self.sig_qv = 1.0 / np.sqrt(1)           # [m/s/sqrt(s)]
+        self.sig_qztd = 0.05 / np.sqrt(3600)     # [m/sqrt(s)]
+        self.sig_qion = 10.0 / np.sqrt(1)        # [m/s/sqrt(s)]
+        self.sig_qb = 1e-4 / np.sqrt(1)          # [m/s/sqrt(s)]
 
         # RTKLIB-compatible AR extras
         self.maxtdiff = 30.0     # [s] max age of base observations
@@ -931,7 +950,9 @@ _NAV_FIELDS = {
             "trpModel", "ionoModel", "tidecorr", "trop_opt", "iono_opt",
             "phw_opt", "csmooth", "monlevel", "cnr_min", "cnr_min_gpy",
             "maxout", "excl_sat", "rb", "baseline", "eratio", "err",
-            "sig_p0", "maxtdiff", "rtklib_mode", "excsat", "arfilter",
+            "sig_p0", "sig_v0", "sig_ztd0", "sig_ion0", "sig_n0",
+            "sig_qp", "sig_qv", "sig_qztd", "sig_qion", "sig_qb",
+            "maxtdiff", "rtklib_mode", "excsat", "arfilter",
             "minfixsats"),
     "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
             "el", "phw", "sat", "t", "tt", "smode", "nsat"),
