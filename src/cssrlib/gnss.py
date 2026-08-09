@@ -859,9 +859,8 @@ class ProcConfig():
 class ReceiverState():
     """Per-receiver bookkeeping for one epoch and its history.
 
-    One instance per receiver. The rover/base pairs that currently live
-    side by side on Nav -- gf and gf_r above all -- are a single field
-    here, held by two objects.
+    One instance per receiver. rtkpos gives the base its own, which is what
+    let the rover/base pair gf / gf_r collapse into a single ``gf``.
     """
 
     def __init__(self, nf=2):
@@ -880,11 +879,10 @@ class ReceiverState():
         # Cleared by udstate after the reset is applied.
         self.slip = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
 
-        # geometry-free combination for cycle-slip detection.
-        # gf is this receiver's; gf_r is the base's, kept here only until
-        # the base owns a ReceiverState of its own.
+        # geometry-free combination for cycle-slip detection, this
+        # receiver's own. There used to be a second table, gf_r, because one
+        # Nav had to hold the base's as well.
         self.gf = np.zeros(uGNSS.MAXSAT)
-        self.gf_r = np.zeros(uGNSS.MAXSAT)
 
         self.el = np.zeros(uGNSS.MAXSAT)
         self.phw = np.zeros(uGNSS.MAXSAT)
@@ -935,7 +933,7 @@ _NAV_FIELDS = {
             "maxout", "excl_sat", "rb", "baseline", "eratio", "err",
             "sig_p0", "maxtdiff", "rtklib_mode", "excsat", "arfilter",
             "minfixsats"),
-    "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf", "gf_r",
+    "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
             "el", "phw", "sat", "t", "tt", "smode", "nsat"),
     "flt": ("x", "P", "xa", "Pa", "y", "na", "nq", "nx", "ntrop", "niono"),
 }

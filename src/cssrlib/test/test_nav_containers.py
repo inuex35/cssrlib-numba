@@ -106,14 +106,24 @@ def test_receiver_state_is_constructible_on_its_own():
     assert np.all(base.gf == 0.0)
 
 
-def test_rover_base_pairs_are_still_present():
-    """Two fields today, one field on two ReceiverStates after the next step.
+def test_geometry_free_table_is_per_receiver():
+    """gf_r is gone: the base carries its own gf on its own ReceiverState."""
+    nav = Nav(nf=2)
+    assert hasattr(nav.rcv, "gf")
+    assert not hasattr(nav.rcv, "gf_r"), (
+        "gf_r came back; the rover and base should each own a gf")
 
-    gf/gf_r and rcv_ant/rcv_ant_b are the same quantity for the rover and
-    the base, held side by side because one Nav has to serve both. When the
-    base gets its own ReceiverState these collapse, and this test is the
-    reminder to update.
+    rover, base = ReceiverState(nf=2), ReceiverState(nf=2)
+    base.gf[5] = 1.5
+    assert rover.gf[5] == 0.0, "receivers share a table"
+
+
+def test_receiver_antenna_pair_still_awaits_step_6():
+    """rcv_ant / rcv_ant_b are still two fields, unlike gf.
+
+    Collapsing them means changing peph.antModelRx, which selects between
+    them on an rtype argument; that belongs with the peph split. Nothing
+    currently passes rtype != 1, so rcv_ant_b is unreachable today.
     """
     nav = Nav(nf=2)
-    assert hasattr(nav.rcv, "gf") and hasattr(nav.rcv, "gf_r")
     assert hasattr(nav.data, "rcv_ant") and hasattr(nav.data, "rcv_ant_b")
