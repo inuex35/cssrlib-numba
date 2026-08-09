@@ -15,8 +15,8 @@ from cssrlib.atmosphere import tropmapf_niell
 from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
 from cssrlib.ppp import shapiro, windupcorr
 from cssrlib.peph import antModelRx, antModelTx
-from cssrlib.cssrlib import sCType
-from cssrlib.cssrlib import sCSSRTYPE as sc
+from cssrlib.ssr_types import sCType
+from cssrlib.ssr_types import sCSSRTYPE as sc
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"

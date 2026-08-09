@@ -2,8 +2,8 @@
 module for ephemeris processing
 """
 
-from cssrlib.cssrlib import sCType
-from cssrlib.cssrlib import sCSSRTYPE as sc
+from cssrlib.ssr_types import sCType
+from cssrlib.ssr_types import sCSSRTYPE as sc
 import numpy as np
 from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
