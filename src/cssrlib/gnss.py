@@ -751,74 +751,42 @@ class Alm():
         self.sat = sat
 
 
-class Nav():
-    """ class to define the navigation message """
+class NavData():
+    """Navigation data: ephemerides, corrections, antennas.
 
-    def __init__(self, nf=2):
+    Read-mostly, and identical for every receiver in a session -- which is
+    why rover and base can share one instance instead of the base getting a
+    deepcopy of everything.
+    """
+
+    def __init__(self):
         self.eph = []
         self.geph = []
         self.seph = []
         self.peph = []
+        self.pclk = []
+        self.ne = 0
+        self.nc = 0
+
         self.ion = np.array([
             [0.1118E-07, -0.7451E-08, -0.5961E-07, 0.1192E-06],
             [0.1167E+06, -0.2294E+06, -0.1311E+06, 0.1049E+07]])
         self.ion_gim = np.zeros(9)
         self.ion_region = 0  # 0: wide-area, 1: Japan-aera (QZSS only)
-        # self.sto = np.zeros(3)
-        # self.sto_prm = np.zeros(4, dtype=int)
 
         self.sto_prm = {}
         self.eop_prm = {}
         self.ion_prm = {}
-
         self.eop = np.zeros(9)
-        self.elmin = np.deg2rad(15.0)
-        self.tidecorr = False
-        self.nf = nf
-        self.ne = 0
-        self.nc = 0
-        self.excl_sat = []  # Excluded satellites
-        self.rb = [0, 0, 0]  # base station position in ECEF [m]
-        self.baseline = 0    # baseline length [km]
-        self.smode = 0  # position mode 0:NONE,1:std,2:DGPS,4:fix,5:float
-        self.pmode = 1  # 0: static, 1: kinematic
-        self.ephopt = 2  # ephemeris option 0: BRDC, 1: SBAS, 2: SSR-APC,
-        #                  3: SSR-CG, 4: PREC
-        self.rmode = 0  # 0: IF not applied, 1: IF for L1/L2, 2: IF for L1/L5
-
-        # 0:float-ppp,1:continuous,2:instantaneous,3:fix-and-hold
-        self.armode = 0
-        self.thresar = 3.0  # AR acceptance threshold
-        self.elmaskar = np.deg2rad(20.0)  # elevation mask for AR
-
-        # cycle-slip threshold of geometry-free combination of phase [m]
-        self.thresslip = 0.15
-
         self.leaps = 18  # leap seconds [s]
 
-        # Select tropospheric model
-        #
-        self.trpModel = uTropoModel.SAAST
-
-        # Select iono model
-        #
-        self.ionoModel = uIonoModel.KLOBUCHAR
-
-        # 0: use trop-model, 1: estimate, 2: use cssr correction
-        self.trop_opt = 0
-
-        # 0: use iono-model, 1: estimate, 2: use cssr correction
-        self.iono_opt = 0
-
-        # 0: none, 1: full model, 2: local/regional model
-        self.phw_opt = 1
-
-        self.monlevel = 1
-        self.cnr_min = 25
-        self.cnr_min_gpy = 15
-        self.maxout = 5  # maximum outage [epochs]
+        # GLONASS frequency channel table
+        self.glo_ch = {}
 
         self.sat_ant = None
+        # rcv_ant / rcv_ant_b are one antenna each for two receivers; they
+        # collapse into a single per-receiver field once ReceiverState owns
+        # the receiver-specific data.
         self.rcv_ant = None
         self.rcv_ant_b = None
 
@@ -828,34 +796,194 @@ class Nav():
         self.dsis = np.zeros(uGNSS.MAXSAT)
         self.sis = np.zeros(uGNSS.MAXSAT)
 
-        # Satellite observation status
-        self.fix = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
-        self.edt = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
+
+class ProcConfig():
+    """How to process: models, thresholds, error budget.
+
+    Fixed for the duration of a run. The difference between an RTK and a
+    PPP-RTK session is a difference in these values, not in class.
+    """
+
+    def __init__(self, nf=2):
+        self.nf = nf
+        self.pmode = 1   # 0: static, 1: kinematic
+        self.rmode = 0   # 0: IF not applied, 1: IF for L1/L2, 2: IF for L1/L5
+        self.ephopt = 2  # 0: BRDC, 1: SBAS, 2: SSR-APC, 3: SSR-CG, 4: PREC
+
+        self.elmin = np.deg2rad(15.0)
+        self.elmaskar = np.deg2rad(20.0)  # elevation mask for AR
+
+        # 0:float-ppp,1:continuous,2:instantaneous,3:fix-and-hold
+        self.armode = 0
+        self.parmode = 2   # LAMBDA search: 1 full ILS, 2 partial AR
+        self.par_P0 = 0.995
+        self.thresar = 3.0  # AR acceptance threshold
+
+        # cycle-slip threshold of geometry-free combination of phase [m]
+        self.thresslip = 0.15
+
+        self.trpModel = uTropoModel.SAAST
+        self.ionoModel = uIonoModel.KLOBUCHAR
+        self.tidecorr = False
+
+        # 0: use trop-model, 1: estimate, 2: use cssr correction
+        self.trop_opt = 0
+        # 0: use iono-model, 1: estimate, 2: use cssr correction
+        self.iono_opt = 0
+        # 0: none, 1: full model, 2: local/regional model
+        self.phw_opt = 1
+        self.csmooth = False
+
+        self.monlevel = 1
+        self.cnr_min = 25
+        self.cnr_min_gpy = 15
+        self.maxout = 5  # maximum outage [epochs]
+
+        self.excl_sat = []   # Excluded satellites
+        self.rb = [0, 0, 0]  # base station position in ECEF [m]
+        self.baseline = 0    # baseline length [km]
+
+        # Observation error budget; the engine overwrites these per mode.
+        self.eratio = np.ones(nf) * 50
+        self.err = [0, 0.003, 0.003]
+        self.sig_p0 = 30.0
+
+        # RTKLIB-compatible AR extras
+        self.maxtdiff = 30.0     # [s] max age of base observations
+        self.rtklib_mode = False
+        self.excsat = 0          # last excluded satellite (round-robin)
+        self.arfilter = True     # drop newly-acquired sats that hurt ratio
+        self.minfixsats = 4      # minimum sats required to attempt AR
+
+
+class ReceiverState():
+    """Per-receiver bookkeeping for one epoch and its history.
+
+    One instance per receiver. The rover/base pairs that currently live
+    side by side on Nav -- gf and gf_r above all -- are a single field
+    here, held by two objects.
+    """
+
+    def __init__(self, nf=2):
+        self.fix = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
+        self.edt = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
         # Measurement outage indicator
-        self.outc = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
+        self.outc = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
         # Carrier-phase processed indicator
-        self.vsat = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
-        # Lock counter (RTKLIB ssat[].lock equivalent): consecutive epochs the
-        # carrier phase has been valid. Resets to 0 on outage; used by
+        self.vsat = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
+        # Lock counter (RTKLIB ssat[].lock equivalent): consecutive epochs
+        # the carrier phase has been valid. Resets to 0 on outage; used by
         # rtklib_mode arfilter to demote newly-acquired satellites.
-        self.lock = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
+        self.lock = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
         # Cycle-slip flag (LLI or GF slip detected at qcedit). Causes
         # ambiguity reset in udstate without dropping the observation.
         # Cleared by udstate after the reset is applied.
-        self.slip = np.zeros((uGNSS.MAXSAT, self.nf), dtype=int)
+        self.slip = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
 
-        # geometry-free combination for cycle-slip detection
+        # geometry-free combination for cycle-slip detection.
+        # gf is this receiver's; gf_r is the base's, kept here only until
+        # the base owns a ReceiverState of its own.
         self.gf = np.zeros(uGNSS.MAXSAT)
         self.gf_r = np.zeros(uGNSS.MAXSAT)
 
-        self.tt = 0
+        self.el = np.zeros(uGNSS.MAXSAT)
+        self.phw = np.zeros(uGNSS.MAXSAT)
+
+        self.sat = np.zeros(0, dtype=int)
         self.t = gtime_t()
+        self.tt = 0
 
-        # GLONASS frequency channel table
-        self.glo_ch = {}
-
-        # number of satellite (observed, calculated, corrected)
+        self.smode = 0  # 0:NONE,1:std,2:DGPS,4:fix,5:float
+        # number of satellites (observed, calculated, corrected)
         self.nsat = [0, 0, 0]
+
+
+class FilterState():
+    """The estimator's state vector and covariance.
+
+    Sized by :class:`cssrlib.state.StateLayout`; an external estimator (the
+    GTSAM double-difference workflow) simply does not create one.
+    """
+
+    def __init__(self):
+        self.x = np.zeros(0)
+        self.P = np.zeros((0, 0))
+        self.xa = np.zeros(0)
+        self.Pa = np.zeros((0, 0))
+        self.y = np.zeros(0)
+
+        self.na = 0
+        self.nq = 0
+        self.nx = 0
+        self.ntrop = 0
+        self.niono = 0
+
+
+# Which container owns which attribute. Nav delegates through this map, so
+# every existing `nav.<field>` call site keeps working while the data is
+# actually stored in the component it belongs to.
+_NAV_FIELDS = {
+    "data": ("eph", "geph", "seph", "peph", "pclk", "ne", "nc",
+             "ion", "ion_gim", "ion_region", "sto_prm", "eop_prm",
+             "ion_prm", "eop", "leaps", "glo_ch",
+             "sat_ant", "rcv_ant", "rcv_ant_b",
+             "dorb", "dclk", "dsis", "sis"),
+    "cfg": ("nf", "pmode", "rmode", "ephopt", "elmin", "elmaskar",
+            "armode", "parmode", "par_P0", "thresar", "thresslip",
+            "trpModel", "ionoModel", "tidecorr", "trop_opt", "iono_opt",
+            "phw_opt", "csmooth", "monlevel", "cnr_min", "cnr_min_gpy",
+            "maxout", "excl_sat", "rb", "baseline", "eratio", "err",
+            "sig_p0", "maxtdiff", "rtklib_mode", "excsat", "arfilter",
+            "minfixsats"),
+    "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf", "gf_r",
+            "el", "phw", "sat", "t", "tt", "smode", "nsat"),
+    "flt": ("x", "P", "xa", "Pa", "y", "na", "nq", "nx", "ntrop", "niono"),
+}
+
+
+def _nav_property(field, component):
+    def getter(self):
+        return getattr(getattr(self, component), field)
+
+    def setter(self, value):
+        setattr(getattr(self, component), field, value)
+
+    getter.__name__ = field
+    return property(getter, setter,
+                    doc=f"Delegated to ``Nav.{component}.{field}``.")
+
+
+class Nav():
+    """ class to define the navigation message
+
+    Kept as the single object every call site already passes around, but it
+    now owns four containers rather than 57 loose fields:
+
+    ``data``
+        :class:`NavData` -- ephemerides and corrections, shareable.
+    ``cfg``
+        :class:`ProcConfig` -- how to process; the only thing that differs
+        between an RTK and a PPP-RTK run.
+    ``rcv``
+        :class:`ReceiverState` -- per-receiver bookkeeping.
+    ``flt``
+        :class:`FilterState` -- the estimator's x and P.
+
+    Attribute access is delegated, so ``nav.eph`` and ``nav.data.eph`` are
+    the same object and no existing caller has to change.
+    """
+
+    def __init__(self, nf=2):
+        self.data = NavData()
+        self.cfg = ProcConfig(nf=nf)
+        self.rcv = ReceiverState(nf=nf)
+        self.flt = FilterState()
+
+
+for _component, _fields in _NAV_FIELDS.items():
+    for _field in _fields:
+        setattr(Nav, _field, _nav_property(_field, _component))
+del _component, _fields, _field
 
 
 def epoch2time(ep):
