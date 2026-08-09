@@ -3,16 +3,10 @@
 Constellations, signal bands and types, and the model selectors. No logic;
 imported by everything else."""
 
-from copy import deepcopy
 from enum import IntEnum
-from math import floor, sin, cos, sqrt, asin, atan2, fabs, tan
 import numpy as np
-from datetime import datetime, timezone
-import bitstruct.c as bs
 
 from cssrlib import constants as _c
-from cssrlib import geometry as _geom_fast
-from cssrlib import atmosphere as _atm_fast
 
 
 gpst0 = [1980, 1, 6, 0, 0, 0]  # GPS system time reference
