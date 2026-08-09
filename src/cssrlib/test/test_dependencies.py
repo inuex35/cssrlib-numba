@@ -27,7 +27,8 @@ LAYER = {
     "state": 2, "config": 2, "glonass": 2,
     # L3 I/O and products
     "rinex_reader": 3, "rinex_writer": 3, "rinex": 3,
-    "ephemeris": 3, "peph": 3, "ppp": 3,
+    "ephemeris": 3, "ppp": 3,
+    "frames": 3, "peph_sp3": 3, "antex": 3, "bsx": 3, "peph": 3,
     # L4 SSR decoding
     "cssrlib": 4, "cssr_bds": 4, "cssr_has": 4, "cssr_mdc": 4, "cssr_pvs": 4,
     # L5 observation model
