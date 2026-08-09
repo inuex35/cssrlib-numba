@@ -18,6 +18,7 @@ from cssrlib.peph import antModelRx, antModelTx
 from cssrlib.cssrlib import sCType
 from cssrlib.cssrlib import sCSSRTYPE as sc
 from cssrlib.mlambda import mlambda
+from cssrlib.state import StateLayout
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
@@ -378,18 +379,14 @@ class gnssobs():
         # Position (+ optional velocity), zenith tropo delay and
         # slant ionospheric delay states
         #
-        self.nav.ntrop = (1 if self.nav.trop_opt == 1 else 0)
-        self.nav.niono = (uGNSS.MAXSAT if self.nav.iono_opt == 1 else 0)
-
-        self.nav.na = (3 if self.nav.pmode == 0 else 6)
-        self.nav.nq = (3 if self.nav.pmode == 0 else 6)
-
-        self.nav.na += self.nav.ntrop + self.nav.niono
-        self.nav.nq += self.nav.ntrop + self.nav.niono
-
-        # State vector dimensions (including slant iono delay and ambiguities)
-        #
-        self.nav.nx = self.nav.na+uGNSS.MAXSAT*self.nav.nf
+        # One object owns where every unknown sits; IB/II/IT below read it
+        # rather than re-deriving the arithmetic.
+        self.layout = StateLayout(
+            pmode=self.nav.pmode,
+            nf=self.nav.nf,
+            ntrop=(1 if self.nav.trop_opt == 1 else 0),
+            niono=(uGNSS.MAXSAT if self.nav.iono_opt == 1 else 0))
+        self.layout.apply_to(self.nav)
 
         self.nav.x = np.zeros(self.nav.nx)
         self.nav.P = np.zeros((self.nav.nx, self.nav.nx))
@@ -547,16 +544,15 @@ class gnssobs():
 
     def IB(self, s, f, na=3):
         """ return index of phase ambiguity """
-        idx = na+uGNSS.MAXSAT*f+s-1
-        return idx
+        return self.layout.ambiguity(s, f, na)
 
     def II(self, s, na):
         """ return index of slant ionospheric delay estimate """
-        return na-uGNSS.MAXSAT+s-1
+        return self.layout.iono(s, na)
 
     def IT(self, na):
         """ return index of zenith tropospheric delay estimate """
-        return na-uGNSS.MAXSAT-1
+        return self.layout.tropo(na)
 
     @staticmethod
     def nsig_sys(obs, sys):
