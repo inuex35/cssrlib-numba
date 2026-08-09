@@ -1,39 +1,96 @@
-name: Execute Python Scripts
+name: tests
 
+# Runs on every push and pull request. It previously fired only on `main`
+# and `devel`: `devel` does not exist in this repository and `main` has been
+# stale since 2025-11, so this workflow had never run on an active branch.
+# That is how 20c0df1 reverted 18 Numba kernels and broke four code paths
+# without anything objecting.
 on:
   push:
-    branches:
-      - main
-      - devel
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-  execute-scripts:
-    name: Execute Python Scripts
+  pytest:
+    name: pytest (python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
 
     steps:
-      - name: Checkout cssrlib repository
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
-      - name: Install dependencies from repository
+      # Install from requirements.txt alone, so a dependency that is
+      # declared but missing -- or needed but undeclared -- fails here.
+      # numba was an undeclared hard import for four modules, and scipy is
+      # required at runtime by numba's np.linalg even though nothing
+      # imports it.
+      - name: Install declared dependencies
         run: pip install -r requirements.txt
- 
-      - name: Install cssrlib from cloned repository
-        run: pip install .
- 
-      - name: Execute Python scripts
+
+      - name: Install cssrlib
+        run: pip install --no-deps .
+
+      - name: Verify every module imports
         run: |
-          cd ./src/cssrlib/test
-          for file in $(find . -name "*.py"); do
-            echo "# Execute $file"
-            echo "#"
-            python "$file" > /dev/null
-            echo "# ...done!"
-            echo "#"
-            echo
-          done
+          python - <<'PY'
+          import importlib
+          mods = ['gnss', 'rinex', 'ephemeris', 'orbit', 'glonass', 'mlambda',
+                  'geometry', 'gnssobs', 'rtk', 'ppprtk', 'atmosphere',
+                  'constants', 'ppp', 'peph', 'cssrlib', 'cssr_bds',
+                  'cssr_has', 'cssr_mdc', 'cssr_pvs']
+          for m in mods:
+              importlib.import_module('cssrlib.' + m)
+          print(f'{len(mods)} modules import cleanly')
+          PY
+
+      - name: Run tests
+        run: pip install pytest && pytest src/cssrlib/test -q
+
+  examples:
+    name: examples import
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt && pip install --no-deps .
+
+      # The PPP/PPP-RTK examples are the only remaining callers of
+      # gnssobs.process; the GTSAM ones need gtsam and are covered by
+      # notebook-ci.yml instead.
+      - name: Check the PPP examples still resolve their imports
+        run: |
+          python - <<'PY'
+          import ast, importlib, sys
+          failed = False
+          for path in ('examples/ppp_has.py', 'examples/ppp_bds.py',
+                       'examples/ppprtk_clas.py'):
+              tree = ast.parse(open(path).read())
+              mods = set()
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      mods |= {a.name.split('.')[0] for a in node.names}
+                  elif isinstance(node, ast.ImportFrom) and node.module:
+                      mods.add(node.module.split('.')[0])
+              missing = []
+              for m in sorted(mods):
+                  try:
+                      importlib.import_module(m)
+                  except ImportError:
+                      missing.append(m)
+              print(f'{path}: {missing or "ok"}')
+              failed |= bool(missing)
+          sys.exit(1 if failed else 0)
+          PY
