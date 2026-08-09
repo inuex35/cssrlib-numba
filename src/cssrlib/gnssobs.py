@@ -1470,8 +1470,15 @@ class gnssobs():
                 self.nav.x, self.nav.P, H[0:nv, :], v[0:nv], R)
         return 0
 
-    def qcedit(self, obs, rs, dts, svh, rr=None):
-        """ Coarse quality control and editing of observations """
+    def qcedit(self, obs, rs, dts, svh, rr=None, rcv=None):
+        """ Coarse quality control and editing of observations
+
+        ``rcv`` is the :class:`ReceiverState` to record the results in,
+        defaulting to this engine's rover. Passing the base's state is how
+        a caller edits base observations; previously the only way was to
+        swap ``self.nav`` out from under the engine.
+        """
+        rcv = self.nav.rcv if rcv is None else rcv
 
         # Predicted position at next epoch
         #
@@ -1505,7 +1512,7 @@ class gnssobs():
 
         # Reset previous editing results
         #
-        self.nav.edt = np.zeros((ns, self.nav.nf), dtype=int)
+        rcv.edt = np.zeros((ns, self.nav.nf), dtype=int)
 
         # Loop over all satellites
         #
@@ -1516,13 +1523,13 @@ class gnssobs():
             sys_i, _ = sat2prn(sat_i)
 
             if sat_i not in obs.sat:
-                self.nav.edt[i, :] = 1
+                rcv.edt[i, :] = 1
                 continue
 
             # Check satellite exclusion
             #
             if sat_i in self.nav.excl_sat:
-                self.nav.edt[i, :] = 1
+                rcv.edt[i, :] = 1
                 if self.nav.monlevel > 0:
                     self.nav.fout.write("{}  {} - edit - satellite excluded\n"
                                         .format(time2str(obs.t),
@@ -1534,7 +1541,7 @@ class gnssobs():
             # Check for valid orbit and clock offset
             #
             if np.isnan(rs[j, :]).any() or np.isnan(dts[j]):
-                self.nav.edt[i, :] = 1
+                rcv.edt[i, :] = 1
                 if self.nav.monlevel > 0:
                     self.nav.fout.write("{}  {} - edit - invalid eph\n"
                                         .format(time2str(obs.t),
@@ -1544,7 +1551,7 @@ class gnssobs():
             # Check satellite health
             #
             if svh[j] > 0:
-                self.nav.edt[i, :] = 1
+                rcv.edt[i, :] = 1
                 if self.nav.monlevel > 0:
                     self.nav.fout.write("{}  {} - edit - satellite unhealthy\n"
                                         .format(time2str(obs.t),
@@ -1555,9 +1562,9 @@ class gnssobs():
             #
             _, e = geodist(rs[j, :], rr_)
             _, el = satazel(pos, e)
-            self.nav.el[sat_i - 1] = el  # persist for weighting / AR elev mask
+            rcv.el[sat_i - 1] = el  # persist for weighting / AR elev mask
             if el < self.nav.elmin:
-                self.nav.edt[i][:] = 1
+                rcv.edt[i][:] = 1
                 if self.nav.monlevel > 0:
                     self.nav.fout.write(
                         "{}  {} - edit - low elevation {:5.1f} deg\n"
@@ -1585,7 +1592,7 @@ class gnssobs():
                 # Cycle  slip check by LLI
                 #
                 if obs.lli[j, f] == 1:
-                    self.nav.edt[i, f] = 1
+                    rcv.edt[i, f] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write("{}  {} - edit {:4s} - LLI\n"
                                             .format(time2str(obs.t),
@@ -1596,7 +1603,7 @@ class gnssobs():
                 # Check for measurement consistency
                 #
                 if obs.P[j, f] == 0.0:
-                    self.nav.edt[i, f] = 1
+                    rcv.edt[i, f] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
                             "{}  {} - edit {:4s} - invalid PR obs\n"
@@ -1606,7 +1613,7 @@ class gnssobs():
                     continue
 
                 if obs.L[j, f] == 0.0:
-                    self.nav.edt[i, f] = 1
+                    rcv.edt[i, f] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
                             "{}  {} - edit {:4s} - invalid CP obs\n"
@@ -1620,7 +1627,7 @@ class gnssobs():
                 cnr_min = self.nav.cnr_min_gpy \
                     if sigsCN[f].isGPS_PY() else self.nav.cnr_min
                 if obs.S[j, f] < cnr_min:
-                    self.nav.edt[i, f] = 1
+                    rcv.edt[i, f] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
                             "{}  {} - edit {:4s} - low C/N0 {:4.1f} dB-Hz\n"
@@ -1650,18 +1657,15 @@ class gnssobs():
                     lam2 = sig2.wavelength()
                 if L1R != 0.0 and L2R != 0.0:
                     gf1 = (L1R*lam1-L2R*lam2)
-                    if rr is None:  # rover
-                        gf0 = self.nav.gf[sat_i]
-                    else:  # base
-                        gf0 = self.nav.gf_r[sat_i]
+                    # Previously nav.gf for the rover and nav.gf_r for the
+                    # base, selected by whether rr was passed. Each receiver
+                    # now carries its own table, so there is one name.
+                    gf0 = rcv.gf[sat_i]
                     if gf1 != 0.0:
-                        if rr is None:  # rover
-                            self.nav.gf[sat_i] = gf1
-                        else:  # base
-                            self.nav.gf_r[sat_i] = gf1
+                        rcv.gf[sat_i] = gf1
                     if gf0 != 0.0 and gf1 != 0.0 and \
                             abs(gf1-gf0) > self.nav.thresslip:
-                        self.nav.edt[i, 0:2] = 1
+                        rcv.edt[i, 0:2] = 1
                         if self.nav.monlevel > 0:
                             self.nav.fout.write(" {}  {} - edit {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
                                                 .format(time2str(obs.t),
@@ -1680,8 +1684,8 @@ class gnssobs():
             # multipath canary (admitting L5-less GPS or B1I-only BeiDou-2
             # measurably poisons the urban float solution).
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
-            if nf_sys <= 0 or np.any(self.nav.edt[i, :nf_sys] > 0):
-                self.nav.edt[i, :] = 1
+            if nf_sys <= 0 or np.any(rcv.edt[i, :nf_sys] > 0):
+                rcv.edt[i, :] = 1
                 continue
 
             sat.append(sat_i)

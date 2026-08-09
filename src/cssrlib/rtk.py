@@ -6,9 +6,9 @@ module for RTK positioning
 from cssrlib.gnssobs import gnssobs
 import numpy as np
 from copy import copy, deepcopy
-from contextlib import contextmanager
 from cssrlib.ephemeris import satposs
 from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST, uTideModel
+from cssrlib.gnss import Nav, ReceiverState
 
 
 class DDMeasurements(dict):
@@ -71,16 +71,25 @@ class rtkpos(gnssobs):
         super().__init__(nav=nav, pos0=pos0, logfile=logfile,
                          trop_opt=0, iono_opt=0, phw_opt=0)
 
-        # Temporarily detach the log file handle: deepcopy cannot pickle an
-        # open TextIOWrapper. Share the same handle between rover/base nav.
-        fout = getattr(self.nav, 'fout', None)
-        self.nav.fout = None
-        try:
-            self.base_nav = deepcopy(self.nav)
-        finally:
-            self.nav.fout = fout
-        self.base_nav.fout = fout
-        if base_nav is not None:
+        # The base is a second receiver, not a second engine: it needs its
+        # own per-receiver bookkeeping (edt / el / gf / slip) and nothing
+        # else. Ephemerides, corrections and the processing configuration
+        # are the same for both, so they are shared rather than deepcopied.
+        # Sharing nav.glo_ch is a small fix in itself -- the base used to
+        # populate its own copy of the GLONASS channel table, leaving the
+        # rover's empty for satellites only the base had seen.
+        self.base_rcv = ReceiverState(nf=self.nav.nf)
+
+        if base_nav is None:
+            self.base_nav = self.nav
+        else:
+            # Opt-in: the base runs on different navigation data. Only the
+            # data and configuration are copied -- no file handles involved,
+            # so none of the old detach-and-restore dance is needed.
+            self.base_nav = Nav(nf=self.nav.nf)
+            self.base_nav.data = deepcopy(self.nav.data)
+            self.base_nav.cfg = deepcopy(self.nav.cfg)
+            self.base_nav.rcv = self.base_rcv
             self._override_nav(self.base_nav, base_nav)
 
         self.nav.eratio = np.ones(self.nav.nf)*50  # [-] factor
@@ -98,7 +107,8 @@ class rtkpos(gnssobs):
         # short baselines RTK targets, so they are disabled (the tide model
         # was removed with the minimal core).
         self.nav.tidecorr = uTideModel.NONE
-        self.base_nav.tidecorr = uTideModel.NONE
+        if self.base_nav is not self.nav:
+            self.base_nav.tidecorr = uTideModel.NONE
 
     def single_differences(self, obs, obsb, rs, dts, svh,
                            rsb=None, dtsb=None, svhb=None):
@@ -113,28 +123,29 @@ class rtkpos(gnssobs):
         L / P at the common satellite set. Pre-computed base satellite
         states (rsb / dtsb / svhb) may be passed to skip satposs.
         """
-        nav_rover = self.nav
-        nav_base = self.base_nav
+        rover = self.nav.rcv
+        base = self.base_rcv
 
         if rsb is None or dtsb is None or svhb is None:
-            rsb, _, dtsb, svhb, _ = satposs(obsb, nav_base)
+            rsb, _, dtsb, svhb, _ = satposs(obsb, self.base_nav)
 
-        with self._use_nav(nav_base):
-            sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb, rr=nav_base.rb)
-        with self._use_nav(nav_rover):
-            sat_ed_u = self.qcedit(obs, rs, dts, svh)
+        # Which receiver each edit belongs to is now an argument, not a
+        # temporary rebinding of self.nav.
+        sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb,
+                               rr=self.base_nav.rb, rcv=base)
+        sat_ed_u = self.qcedit(obs, rs, dts, svh, rcv=rover)
 
-        np.maximum(nav_rover.slip, nav_base.slip, out=nav_rover.slip)
+        np.maximum(rover.slip, base.slip, out=rover.slip)
 
         # Per-frequency editing: a sat survives qcedit if ANY band passed,
         # so zero out the bands that failed on either receiver. Consumers
         # (SD diff below, DD factor builders) already skip zero L / P.
         nfu = min(self.nav.nf, obs.L.shape[1])
-        eu = nav_rover.edt[np.asarray(obs.sat) - 1, :nfu] > 0
+        eu = rover.edt[np.asarray(obs.sat) - 1, :nfu] > 0
         obs.L[:, :nfu][eu] = 0.0
         obs.P[:, :nfu][eu] = 0.0
         nfr = min(self.nav.nf, obsb.L.shape[1])
-        er = nav_base.edt[np.asarray(obsb.sat) - 1, :nfr] > 0
+        er = base.edt[np.asarray(obsb.sat) - 1, :nfr] > 0
         obsb.L[:, :nfr][er] = 0.0
         obsb.P[:, :nfr][er] = 0.0
 
@@ -280,15 +291,6 @@ class rtkpos(gnssobs):
             'iu': iu, 'ir': ir, 'sat': sat, 'el': el,
             'obs_sd': obs_sd, 'pos_pred': pos_pred,
         })
-
-    @contextmanager
-    def _use_nav(self, nav):
-        original_nav = self.nav
-        self.nav = nav
-        try:
-            yield
-        finally:
-            self.nav = original_nav
 
     def _override_nav(self, target, source):
         for attr in (
