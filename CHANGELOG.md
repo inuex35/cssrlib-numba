@@ -5,6 +5,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Changed — architecture
+
+The engine was one 2,000-line class holding six concerns, driven by a
+57-field mutable `Nav`, with RTK and PPP-RTK expressed as subclasses that
+differed only in settings. Restructured in six verified steps, each
+numerically inert:
+
+- `StateLayout` (`cssrlib/state.py`) owns where every unknown sits in the
+  state vector, replacing index arithmetic reproduced at a dozen call
+  sites. Writing it down exposed that `IT` and `II` assumed a full-length
+  ionospheric block: with tropo estimated and iono not, `IT` returned -230,
+  and numpy wraps a negative index to the end of the array rather than
+  raising, so the code would have read and written an ambiguity state
+  believing it was the tropospheric one. Unreachable in the shipped
+  configurations; fixed for all four combinations.
+
+- `Nav` delegates to four containers — `NavData` (ephemerides and
+  corrections), `ProcConfig` (how to process), `ReceiverState` (per-receiver
+  bookkeeping) and `FilterState` (x and P). `nav.<field>` still resolves, so
+  no call site changed.
+
+- The base receiver has its own `ReceiverState`. Gone with it: `_use_nav`,
+  the context manager that swapped `self.nav` so the engine could
+  impersonate the base; the `deepcopy` of the whole `Nav`; the
+  detach-and-restore dance around the log handle that deepcopy required;
+  and the `gf` / `gf_r` pair, which `qcedit` selected between by testing
+  whether `rr` had been passed. Sharing `NavData` also fixes `nav.glo_ch`:
+  the base wrote GLONASS channels into its private copy, so a satellite
+  only the base had seen left the rover's table empty.
+
+- `cssrlib/config.py` provides `base_config`, `ppp_config`, `ppprtk_config`
+  and `rtk_config`. `rtkpos` and `ppprtkpos` are one `super()` call each.
+  Configuration is merged into `nav` rather than replacing it, so explicit
+  caller settings — `nav.rb` above all — survive.
+
+- `gnssobs.py` split into `qc.py`, `residuals.py`, `ambiguity.py` and
+  `ekf.py`, composed as mixins. The narrower import lists show that only
+  `residuals` needs the SSR decoder, the antenna model and the tide model.
+
+- `rinex.py`, `peph.py` and `gnss.py` split behind re-export facades
+  (reader/writer; orbits/antennas/frames/biases; enums/signal/time/sat/
+  types/coords). Modules over 1,000 lines: 6 before, 2 after.
+
+- `sCType` and `sCSSRTYPE` moved to `cssrlib/ssr_types.py`. `ephemeris`
+  imported them from the 1,359-line Compact SSR decoder — a lower layer
+  importing an upper one for two IntEnums — so broadcast RTK loaded a
+  decoder it never calls. `cssrlib.cssrlib` re-exports them.
+
+- `test_dependencies.py` makes the layering a rule that runs, and
+  `test_golden.py` / `test_numba_kernels.py` pin the numbers and the
+  kernels. `.github/workflows/test.yml` fired only on `main` and `devel`;
+  `devel` does not exist and `main` has been stale since 2025-11, so the
+  unit tests had never run on an active branch. That is how 20c0df1 went
+  unnoticed. It now runs on every push and PR.
+
 ### Fixed
 
 - `mlambda` was silently reverted to the upstream pure-Python implementation

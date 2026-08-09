@@ -3,16 +3,8 @@
 Conversion between (system, PRN), the internal satellite number and the
 RINEX identifier, with the lookup tables that make it O(1)."""
 
-from copy import deepcopy
-from enum import IntEnum
-from math import floor, sin, cos, sqrt, asin, atan2, fabs, tan
 import numpy as np
-from datetime import datetime, timezone
-import bitstruct.c as bs
 
-from cssrlib import constants as _c
-from cssrlib import geometry as _geom_fast
-from cssrlib import atmosphere as _atm_fast
 from cssrlib.gnss_enums import *  # noqa: F401,F403
 
 

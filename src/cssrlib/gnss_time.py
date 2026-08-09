@@ -3,16 +3,10 @@
 gtime_t and the conversions between GPS, Galileo, BeiDou and UTC, plus the
 latitude interpolation the tropospheric mapping needs."""
 
-from copy import deepcopy
-from enum import IntEnum
-from math import floor, sin, cos, sqrt, asin, atan2, fabs, tan
+from math import floor
 import numpy as np
 from datetime import datetime, timezone
-import bitstruct.c as bs
 
-from cssrlib import constants as _c
-from cssrlib import geometry as _geom_fast
-from cssrlib import atmosphere as _atm_fast
 from cssrlib.gnss_enums import *  # noqa: F401,F403
 
 
