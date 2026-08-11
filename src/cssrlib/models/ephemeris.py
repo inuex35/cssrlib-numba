@@ -231,11 +231,16 @@ def eph2pos(t: gtime_t, eph: Eph, flg_v=False):
 
     if flg_v:  # satellite velocity
         qq = np.array([si*sOmg, -si*cOmg, ci])
-        Ed = n/nue
+        # M = M0+(n0+deln)*dt+0.5*delnd*dt^2, so dM/dt = n+0.5*delnd*dt, and
+        # the semi-major axis drifts at Adot, both only for eph.mode > 0.
+        nd = 0.5*eph.delnd*dt if eph.mode > 0 else 0.0
+        Akd = eph.Adot if eph.mode > 0 else 0.0
+        Ed = (n+nd)/nue
         nud = np.sqrt(1.0-eph.e**2)/nue*Ed
-        h2d = 2.0*nud*np.array([-h[1], h[0]])
+        # d/dt [cos(2*phi), sin(2*phi)] rotates the h2 basis, not the h basis
+        h2d = 2.0*nud*np.array([-h2[1], h2[0]])
         ud = nud+np.array([eph.cuc, eph.cus])@h2d
-        rd = Ak*eph.e*sE*Ed+np.array([eph.crc, eph.crs])@h2d
+        rd = Akd*nue+Ak*eph.e*sE*Ed+np.array([eph.crc, eph.crs])@h2d
 
         hd = np.array([-h[1], h[0]])
         xod = rd*h+(r*ud)*hd
