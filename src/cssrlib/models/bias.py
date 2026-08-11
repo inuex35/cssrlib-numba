@@ -7,9 +7,9 @@ Created on Sun Aug 22 21:01:49 2021
 @author: ruihi
 """
 
-from cssrlib.domain.gnss import id2sat, char2sys
-from cssrlib.domain.gnss import timediff, gtime_t
-from cssrlib.domain.gnss import rSigRnx, uGNSS, uTYP
+from cssrlib.gnss import id2sat, char2sys
+from cssrlib.gnss import timediff, gtime_t
+from cssrlib.gnss import rSigRnx, uGNSS, uTYP
 
 import numpy as np
 

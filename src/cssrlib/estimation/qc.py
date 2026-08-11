@@ -5,9 +5,9 @@ into the ReceiverState of whichever receiver is being edited."""
 
 import numpy as np
 
-from cssrlib.domain.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
-from cssrlib.domain.gnss import uTropoModel, ecef2pos, geodist, satazel
-from cssrlib.domain.gnss import time2str, timediff, gpst2utc
+from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
+from cssrlib.gnss import uTropoModel, ecef2pos, geodist, satazel
+from cssrlib.gnss import time2str, timediff, gpst2utc
 from cssrlib.models.tides import tidedisp, tidedispIERS2010, uTideModel
 
 # format definition for logging

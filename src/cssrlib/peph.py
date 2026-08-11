@@ -16,4 +16,4 @@ from cssrlib.models.frames import (Rx, Ry, Rz, nut_iau1980,            # noqa: F
 from cssrlib.models.bias import bias_t, biasdec                         # noqa: F401
 
 # ppp.py imports these from here rather than from gnss; kept re-exported.
-from cssrlib.domain.gnss import gpst2utc, time2epoch                   # noqa: F401
+from cssrlib.gnss import gpst2utc, time2epoch                   # noqa: F401

@@ -18,7 +18,7 @@ The kernels and log formats are re-exported below so that
 
 import numpy as np
 
-from cssrlib.domain.gnss import uGNSS, uTYP
+from cssrlib.gnss import uGNSS, uTYP
 from cssrlib.estimation.layout import StateLayout
 
 from cssrlib.estimation.qc import QualityControlMixin
@@ -52,7 +52,7 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
                  trop_opt=1, iono_opt=1, phw_opt=1):
         """ initialize variables for PPP
 
-        ``cfg`` is a :class:`~cssrlib.domain.gnss.ProcConfig`, normally built by one
+        ``cfg`` is a :class:`~cssrlib.gnss.ProcConfig`, normally built by one
         of the factories in :mod:`cssrlib.estimation.config`. It replaces the config
         already on ``nav``. The ``trop_opt`` / ``iono_opt`` / ``phw_opt``
         keywords are the older way of saying the same thing and still work
@@ -166,7 +166,7 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
         from ``cfg`` where the caller has left ``nav`` at the stock default.
         Anything explicitly set survives.
         """
-        from cssrlib.domain.gnss import ProcConfig
+        from cssrlib.gnss import ProcConfig
 
         stock = ProcConfig(nf=self.nav.nf)
         target = self.nav.cfg

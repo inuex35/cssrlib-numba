@@ -6,13 +6,13 @@ SBAS and the Keplerian constellations."""
 
 import numpy as np
 from pathlib import Path
-from cssrlib.domain.gnss import uGNSS
-from cssrlib.domain.gnss import bdt2gpst, time2bdt
-from cssrlib.domain.gnss import gpst2time, bdt2time
-from cssrlib.domain.gnss import prn2sat, char2sys, utc2gpst
-from cssrlib.domain.gnss import Eph, Geph, Nav, time2gpst
-from cssrlib.domain.gnss import Seph, STOParam, EOPParam
-from cssrlib.domain.gnss import IONParam
+from cssrlib.gnss import uGNSS
+from cssrlib.gnss import bdt2gpst, time2bdt
+from cssrlib.gnss import gpst2time, bdt2time
+from cssrlib.gnss import prn2sat, char2sys, utc2gpst
+from cssrlib.gnss import Eph, Geph, Nav, time2gpst
+from cssrlib.gnss import Seph, STOParam, EOPParam
+from cssrlib.gnss import IONParam
 
 
 class NavFileMixin:

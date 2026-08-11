@@ -1,9 +1,9 @@
 """RINEX clock files."""
 
 import numpy as np
-from cssrlib.domain.gnss import uGNSS
-from cssrlib.domain.gnss import timediff, gtime_t
-from cssrlib.domain.gnss import prn2sat, char2sys
+from cssrlib.gnss import uGNSS
+from cssrlib.gnss import timediff, gtime_t
+from cssrlib.gnss import prn2sat, char2sys
 
 
 class pclk_t:

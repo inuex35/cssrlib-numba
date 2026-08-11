@@ -1,8 +1,8 @@
 """
 module for PPP processing
 """
-import cssrlib.domain.gnss as gn
-from cssrlib.models.peph import gpst2utc, time2epoch
+import cssrlib.gnss as gn
+from cssrlib.peph import gpst2utc, time2epoch
 from enum import IntEnum
 from math import sin, cos, atan2, asin
 import numpy as np
@@ -407,7 +407,7 @@ def tidedispIERS2010(tutc, pos, erpv=None):
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     from cssrlib.models.ephemeris import findeph, eph2pos
-    from cssrlib.fileio.rinex import rnxdec
+    from cssrlib.rinex import rnxdec
 
     tgps_ = gn.epoch2time([2021, 3, 19, 0, 0, 0])
     pos_ = np.array([0.61678759,  2.43512138, 64.94054687])
