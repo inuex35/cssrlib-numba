@@ -10,7 +10,7 @@ covering six separable subjects; each now has its own file:
     cssrlib.domain.structs    Obs / Eph / Nav and the four Nav containers
     cssrlib.domain.coords   frames, geodesy, DOP, atmosphere wrappers
 
-Everything is re-exported here, so ``from cssrlib.gnss import Nav`` and the
+Everything is re-exported here, so ``from cssrlib.domain.gnss import Nav`` and the
 rest of the existing imports are unaffected.
 """
 

@@ -1,8 +1,8 @@
 """Pairing two receivers' observation streams, and choosing signals."""
 
 import numpy as np
-from cssrlib.gnss import uTYP
-from cssrlib.gnss import timediff
+from cssrlib.domain.gnss import uTYP
+from cssrlib.domain.gnss import timediff
 
 
 def sync_obs(dec, decb, dt_th=0.1):

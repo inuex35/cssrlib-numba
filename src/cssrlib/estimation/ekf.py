@@ -6,9 +6,9 @@ RTK is not driven from here -- see rtkpos.prepare_double_difference_measurements
 import numpy as np
 
 from cssrlib.models.ephemeris import satposs
-from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
-from cssrlib.gnss import uTropoModel
-from cssrlib.gnss import time2str, timediff
+from cssrlib.domain.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
+from cssrlib.domain.gnss import uTropoModel
+from cssrlib.domain.gnss import time2str, timediff
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"

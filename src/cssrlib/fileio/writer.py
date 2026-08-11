@@ -1,12 +1,12 @@
 """RINEX encoding: observation and navigation file output."""
 
 import numpy as np
-from cssrlib.gnss import uGNSS, uTYP
-from cssrlib.gnss import time2bdt
-from cssrlib.gnss import timediff, gtime_t
-from cssrlib.gnss import timeget, utc2gpst, time2epoch
-from cssrlib.gnss import sat2id, sat2prn, gpst2bdt, time2gpst
-from cssrlib.gnss import gpst2utc
+from cssrlib.domain.gnss import uGNSS, uTYP
+from cssrlib.domain.gnss import time2bdt
+from cssrlib.domain.gnss import timediff, gtime_t
+from cssrlib.domain.gnss import timeget, utc2gpst, time2epoch
+from cssrlib.domain.gnss import sat2id, sat2prn, gpst2bdt, time2gpst
+from cssrlib.domain.gnss import gpst2utc
 
 
 class rnxenc:

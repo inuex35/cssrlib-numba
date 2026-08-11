@@ -7,8 +7,8 @@ from cssrlib.engine.gnssobs import gnssobs
 import numpy as np
 from copy import copy, deepcopy
 from cssrlib.models.ephemeris import satposs
-from cssrlib.gnss import sat2prn, uGNSS, uTYP, rCST, uTideModel
-from cssrlib.gnss import Nav, ReceiverState
+from cssrlib.domain.gnss import sat2prn, uGNSS, uTYP, rCST, uTideModel
+from cssrlib.domain.gnss import Nav, ReceiverState
 from cssrlib.estimation.config import rtk_config
 
 

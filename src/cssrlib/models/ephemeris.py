@@ -5,8 +5,8 @@ module for ephemeris processing
 from cssrlib.core.ssr_types import sCType
 from cssrlib.core.ssr_types import sCSSRTYPE as sc
 import numpy as np
-from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
-from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
+from cssrlib.domain.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
+from cssrlib.domain.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
     time2gpst, timeget, time2gst, time2bdt, gst2time, bdt2time, epoch2time
 from datetime import datetime
 import xml.etree.ElementTree as et

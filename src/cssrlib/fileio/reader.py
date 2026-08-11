@@ -14,9 +14,9 @@ and time field parsers, and the file handles.
 """
 
 import numpy as np
-from cssrlib.gnss import uGNSS, uTYP
-from cssrlib.gnss import epoch2time, timediff, gtime_t
-from cssrlib.gnss import timeadd
+from cssrlib.domain.gnss import uGNSS, uTYP
+from cssrlib.domain.gnss import epoch2time, timediff, gtime_t
+from cssrlib.domain.gnss import timeadd
 
 from cssrlib.fileio.nav import NavFileMixin
 from cssrlib.fileio.obs import ObsFileMixin

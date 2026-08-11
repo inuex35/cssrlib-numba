@@ -8,7 +8,7 @@ Precise Point Positioning Service Signal PPP-B2b (Version 1.0), 2020
 import numpy as np
 import bitstruct as bs
 from cssrlib.ssr.base import cssr, sCSSR, sCSSRTYPE, sGNSS, prn2sat, sCType
-from cssrlib.gnss import bdt2time, bdt2gpst, uGNSS, uSIG, uTYP, rSigRnx
+from cssrlib.domain.gnss import bdt2time, bdt2gpst, uGNSS, uSIG, uTYP, rSigRnx
 
 
 class cssr_bds(cssr):

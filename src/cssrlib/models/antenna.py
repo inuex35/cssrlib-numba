@@ -7,11 +7,11 @@ Created on Sun Aug 22 21:01:49 2021
 @author: ruihi
 """
 
-from cssrlib.gnss import id2sat, char2sys, sat2prn
-from cssrlib.gnss import timediff, gtime_t
-from cssrlib.gnss import str2time
-from cssrlib.gnss import ecef2enu
-from cssrlib.gnss import rSigRnx, uGNSS, uTYP, uSIG
+from cssrlib.domain.gnss import id2sat, char2sys, sat2prn
+from cssrlib.domain.gnss import timediff, gtime_t
+from cssrlib.domain.gnss import str2time
+from cssrlib.domain.gnss import ecef2enu
+from cssrlib.domain.gnss import rSigRnx, uGNSS, uTYP, uSIG
 
 import numpy as np
 

@@ -5,7 +5,7 @@ module for PPP-RTK positioning
 import numpy as np
 from cssrlib.engine.gnssobs import gnssobs
 from cssrlib.estimation.config import ppprtk_config
-from cssrlib.gnss import ecef2pos, sat2prn, uTYP, tropmapf
+from cssrlib.domain.gnss import ecef2pos, sat2prn, uTYP, tropmapf
 
 
 class PPPMeasurements(dict):
