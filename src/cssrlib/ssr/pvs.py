@@ -19,7 +19,7 @@ import numpy as np
 import bitstruct as bs
 from cssrlib.ssr.base import cssr, sCSSR, sCSSRTYPE, prn2sat, sCType
 from cssrlib.ssr.base import sat2id
-from cssrlib.gnss import uGNSS, rCST, gpst2time, timediff, timeadd, time2gpst
+from cssrlib.domain.gnss import uGNSS, rCST, gpst2time, timediff, timeadd, time2gpst
 from binascii import unhexlify
 
 

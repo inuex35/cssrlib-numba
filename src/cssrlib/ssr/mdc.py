@@ -10,7 +10,7 @@ QZSS MADOCA-PPP correction data decoder
 import numpy as np
 import bitstruct as bs
 from cssrlib.ssr.base import cssr, sCSSRTYPE, sCSSR, local_corr, sCType
-from cssrlib.gnss import gpst2time, time2str, uGNSS, prn2sat, rCST, sat2id
+from cssrlib.domain.gnss import gpst2time, time2str, uGNSS, prn2sat, rCST, sat2id
 
 
 class areaInfo():

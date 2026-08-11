@@ -12,11 +12,14 @@ broadcast-ephemeris RTK loaded a 1,300-line decoder it never used.
 """
 
 import ast
+import importlib
 import os
 import subprocess
 import sys
 
 import pytest
+
+import cssrlib
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,18 +27,11 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAYERS = ["core", "domain", "models", "fileio", "ssr", "estimation", "engine"]
 DEPTH = {name: i for i, name in enumerate(LAYERS)}
 
-# Names that predate the package layout and stay at the top level as public
-# API. Each forwards into a package; for layering purposes it counts as
-# wherever it forwards to.
-FACADES = {
-    "gnss": "domain", "rinex": "fileio", "peph": "models",
-    "constants": "core", "geometry": "core", "atmosphere": "core",
-    "orbit": "core", "mlambda": "core",
-    "glonass": "models", "ephemeris": "models", "ppp": "models",
-    "cssrlib": "ssr", "cssr_bds": "ssr", "cssr_has": "ssr",
-    "cssr_mdc": "ssr", "cssr_pvs": "ssr",
-    "gnssobs": "engine", "rtk": "engine", "ppprtk": "engine",
-}
+# Names that predate the layer layout. They are no longer files: cssrlib's
+# __init__ resolves them with a meta-path finder, so for layering purposes
+# each counts as wherever it forwards to.
+FACADES = {name: target.split(".")[0]
+           for name, target in cssrlib.LEGACY_MODULES.items()}
 
 
 def package_modules():
@@ -47,10 +43,6 @@ def package_modules():
             if fn.endswith(".py") and fn != "__init__.py":
                 out.append((f"{pkg}.{fn[:-3]}", pkg, os.path.join(d, fn)))
     return out
-
-
-def facade_paths():
-    return [(name, os.path.join(SRC, name + ".py")) for name in FACADES]
 
 
 def _is_main_guard(node):
@@ -109,36 +101,60 @@ def test_module_does_not_import_upwards(name, pkg, path):
             f"dependencies must point downwards")
 
 
-@pytest.mark.parametrize("name,path", facade_paths(),
-                         ids=lambda v: v if isinstance(v, str) else "")
-def test_facade_only_forwards(name, path):
-    """A compatibility name must re-export, not grow logic of its own."""
-    tree = ast.parse(open(path).read())
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            continue
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-            continue                      # module docstring
-        if isinstance(node, ast.Assign):  # __all__
-            continue
-        pytest.fail(f"{name}.py contains {type(node).__name__} at line "
-                    f"{node.lineno}; facades forward and nothing else")
+@pytest.mark.parametrize("name,target",
+                         sorted(cssrlib.LEGACY_MODULES.items()),
+                         ids=lambda v: v)
+def test_legacy_name_is_the_same_module_as_its_target(name, target):
+    """The alias must BE the module, not a second copy of it.
+
+    A finder that returned the target's own spec would execute the source
+    again under the legacy name, producing two sets of classes -- so
+    isinstance(nav, cssrlib.gnss.Nav) would fail for a Nav built through
+    cssrlib.domain.gnss.
+    """
+    alias = importlib.import_module(f"cssrlib.{name}")
+    real = importlib.import_module(f"cssrlib.{target}")
+    assert alias is real
 
 
-@pytest.mark.parametrize("name,path", facade_paths(),
-                         ids=lambda v: v if isinstance(v, str) else "")
-def test_facade_is_importable(name, path):
-    __import__(f"cssrlib.{name}")
+@pytest.mark.parametrize("statement", [
+    "import cssrlib.gnss; cssrlib.gnss.Nav",
+    "from cssrlib.gnss import Nav; Nav",
+    "import cssrlib.gnss as gn; gn.Nav",
+    "from cssrlib import gnss; gnss.Nav",
+    "import importlib; importlib.import_module('cssrlib.gnss').Nav",
+])
+def test_every_import_form_resolves(statement):
+    """Third-party code uses all of these; gnss_frontend.py uses three."""
+    out = subprocess.run([sys.executable, "-c", statement],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+
+
+def test_isinstance_survives_the_alias_boundary():
+    import cssrlib.gnss as legacy
+    from cssrlib.domain.gnss import Nav
+
+    assert isinstance(Nav(nf=2), legacy.Nav)
+
+
+def test_importing_the_package_loads_no_layer():
+    """Resolution is lazy: cssrlib itself must stay free."""
+    code = ("import cssrlib, sys; "
+            "print(','.join(m for m in sys.modules "
+            "if m.startswith('cssrlib.')))")
+    out = subprocess.run([sys.executable, "-c", code],
+                         capture_output=True, text=True, check=True)
+    assert not out.stdout.strip(), f"eagerly loaded {out.stdout.strip()}"
 
 
 def test_every_module_lives_in_a_layer():
-    """Nothing loose at the top level except the documented facades."""
-    stray = {fn[:-3] for fn in os.listdir(SRC)
-             if fn.endswith(".py") and fn != "__init__.py"}
-    stray -= set(FACADES)
+    """The package root holds __init__.py and the layer directories, nothing else."""
+    stray = sorted(fn for fn in os.listdir(SRC)
+                   if fn.endswith(".py") and fn != "__init__.py")
     assert not stray, (
-        f"{sorted(stray)} sit at the top level; move them into a package or "
-        f"declare them facades")
+        f"{stray} sit at the package root; put them in the layer that owns "
+        f"them, and add a LEGACY_MODULES entry if the name must survive")
 
 
 def test_no_package_shadows_the_standard_library():

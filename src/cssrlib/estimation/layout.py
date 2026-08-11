@@ -16,7 +16,7 @@ The vector is laid out as::
 as nuisance parameters; ``nx`` is the full length.
 """
 
-from cssrlib.gnss import uGNSS
+from cssrlib.domain.gnss import uGNSS
 
 
 class StateLayout:

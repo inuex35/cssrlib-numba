@@ -16,9 +16,9 @@ from enum import IntEnum
 # Moved to cssrlib.core.ssr_types so that ephemeris (which applies SSR
 # corrections) need not import this decoder. Re-exported for callers.
 from cssrlib.core.ssr_types import sCSSRTYPE, sCType  # noqa: F401
-from cssrlib.gnss import gpst2time, rCST, prn2sat, uGNSS, gtime_t, rSigRnx
-from cssrlib.gnss import uSIG, uTYP, sat2prn, time2str, sat2id, timediff
-from cssrlib.gnss import copy_buff
+from cssrlib.domain.gnss import gpst2time, rCST, prn2sat, uGNSS, gtime_t, rSigRnx
+from cssrlib.domain.gnss import uSIG, uTYP, sat2prn, time2str, sat2id, timediff
+from cssrlib.domain.gnss import copy_buff
 
 
 class sGNSS(IntEnum):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cssrlib.gnss import rCST
+from cssrlib.domain.gnss import rCST
 from numba import njit
 
 OMGE_GLO = float(rCST.OMGE_GLO)
