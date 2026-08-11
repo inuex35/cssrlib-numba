@@ -59,3 +59,98 @@ jobs:
         with:
           name: executed-official-notebook
           path: official/executed_official.ipynb
+
+  # Runs the OFFICIAL gtsam Doppler notebook (borglab/gtsam develop:
+  # python/gtsam/examples/DopplerVelocityExample.ipynb).
+  #
+  # As shipped that notebook loads a prepared data/doppler_velocity_example.npz
+  # and never imports cssrlib, so running it unchanged would test GTSAM and
+  # tell us nothing about this repository. The npz is produced by
+  # gnss_frontend.load_doppler, which does use cssrlib -- RINEX decoding,
+  # satposs, geodist, satazel -- so this job rebuilds it from the source RINEX
+  # against the revision under test and only then executes the notebook. A red
+  # run means this repo changed the satellite states or the observation set
+  # the Doppler factors are built from.
+  official-doppler-notebook:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install GTSAM nightly (official PyPI) + notebook tooling
+        run: |
+          pip install numpy plotly gtsam-develop
+          pip install jupyter nbconvert ipykernel
+          python -c "import gtsam; assert hasattr(gtsam, 'DopplerFactor'), 'gtsam-develop nightly lacks DopplerFactor'"
+
+      - name: Install cssrlib under test
+        run: pip install -e .
+
+      - name: Fetch official notebook + GNSS front-end helper (borglab develop)
+        run: |
+          mkdir -p doppler/data
+          cd doppler
+          curl -fsSL -O https://raw.githubusercontent.com/borglab/gtsam/develop/python/gtsam/examples/DopplerVelocityExample.ipynb
+          curl -fsSL -O https://raw.githubusercontent.com/borglab/gtsam/develop/python/gtsam/examples/gnss_frontend.py
+
+      - name: Cache the source RINEX
+        uses: actions/cache@v4
+        with:
+          path: doppler/rinex
+          key: doppler-rinex-doy2025-233-v1
+
+      - name: Fetch the source RINEX (hirokawa/cssrlib-data, open-sky day 233)
+        run: |
+          mkdir -p doppler/rinex/doy2025-233
+          cd doppler/rinex/doy2025-233
+          base=https://raw.githubusercontent.com/hirokawa/cssrlib-data/main/data/doy2025-233
+          for f in 233h_rnx.obs 233h_rnx.nav; do
+            test -s "$f" || curl -fsSL -O "$base/$f"
+          done
+          ls -l
+
+      # This is the step that puts cssrlib under test. Everything the notebook
+      # consumes is computed here.
+      - name: Rebuild the prepared dataset with the cssrlib under test
+        working-directory: doppler
+        run: |
+          python - <<'PY'
+          import numpy as np
+          from gnss_frontend import load_doppler, save_doppler_data
+          import cssrlib
+
+          # 301 epochs is what the published dataset covers; load_doppler
+          # defaults to 120, which would leave the notebook reporting a
+          # different graph size than the numbers it was written against.
+          EPOCHS = 301
+
+          print("cssrlib", cssrlib.__version__, "from", cssrlib.__file__)
+          data = load_doppler("rinex", n_epochs=EPOCHS)
+          save_doppler_data(data, "data/doppler_velocity_example.npz")
+
+          with np.load("data/doppler_velocity_example.npz") as fh:
+              n_ep, n_obs = len(fh["epoch_dt"]), len(fh["doppler"])
+              print("epochs:", n_ep, "observations:", n_obs)
+              assert n_obs > 0, "front end produced no Doppler observations"
+              assert n_ep == EPOCHS, f"expected {EPOCHS} epochs, got {n_ep}"
+          PY
+
+      - name: Execute official Doppler notebook
+        working-directory: doppler
+        run: |
+          jupyter nbconvert --to notebook --execute DopplerVelocityExample.ipynb \
+            --output executed_doppler.ipynb --ExecutePreprocessor.timeout=1200
+
+      - name: Check metrics (static marker, true velocity = 0)
+        run: python ci/check_doppler_notebook.py doppler/executed_doppler.ipynb
+
+      - name: Upload executed notebook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-doppler-notebook
+          path: doppler/executed_doppler.ipynb
