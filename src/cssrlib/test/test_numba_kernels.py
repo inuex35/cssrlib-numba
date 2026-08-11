@@ -16,12 +16,12 @@ import numpy as np
 import pytest
 from numba.core.dispatcher import Dispatcher
 
-import cssrlib.atmosphere as atmosphere
-import cssrlib.geometry as geometry
-import cssrlib.glonass as glonass
-import cssrlib.gnssobs as gnssobs
-import cssrlib.mlambda as mlambda
-import cssrlib.orbit as orbit
+import cssrlib.core.atmosphere as atmosphere
+import cssrlib.core.geometry as geometry
+import cssrlib.models.glonass as glonass
+import cssrlib.engine.gnssobs as gnssobs
+import cssrlib.core.mlambda as mlambda
+import cssrlib.core.orbit as orbit
 
 # module -> kernels that must stay JIT-compiled.
 EXPECTED = {

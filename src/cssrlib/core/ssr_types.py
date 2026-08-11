@@ -3,15 +3,15 @@
 Pure enumerations: which service a correction stream came from, and which
 kind of correction a message carries. No decoding logic, no dependencies.
 
-They live here rather than in :mod:`cssrlib.cssrlib` because the consumers
+They live here rather than in :mod:`cssrlib.ssr.base` because the consumers
 are spread across the stack. ``ephemeris.satposs`` needs to ask "is this an
 orbit correction?" while applying one, and importing that question from the
 1,300-line Compact SSR decoder inverted the dependency: broadcast-ephemeris
 RTK, which decodes no SSR at all, still pulled the decoder (and bitstruct)
 in through ``ephemeris``.
 
-:mod:`cssrlib.cssrlib` re-exports both names, so
-``from cssrlib.cssrlib import sCType`` keeps working.
+:mod:`cssrlib.ssr.base` re-exports both names, so
+``from cssrlib.ssr.base import sCType`` keeps working.
 """
 
 from enum import IntEnum

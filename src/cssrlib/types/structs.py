@@ -5,8 +5,8 @@ ReceiverState and FilterState."""
 
 import numpy as np
 
-from cssrlib.gnss_enums import *  # noqa: F401,F403
-from cssrlib.gnss_time import *  # noqa: F401,F403
+from cssrlib.types.enums import *  # noqa: F401,F403
+from cssrlib.types.timescale import *  # noqa: F401,F403
 
 
 class STOParam():
@@ -360,7 +360,7 @@ class ReceiverState():
 class FilterState():
     """The estimator's state vector and covariance.
 
-    Sized by :class:`cssrlib.state.StateLayout`; an external estimator (the
+    Sized by :class:`cssrlib.estimation.layout.StateLayout`; an external estimator (the
     GTSAM double-difference workflow) simply does not create one.
     """
 

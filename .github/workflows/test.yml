@@ -38,17 +38,27 @@ jobs:
       - name: Install cssrlib
         run: pip install --no-deps .
 
-      - name: Verify every module imports
+      # Catches a distribution that installs no code: src/cssrlib had no
+      # __init__.py, so `packages = find:` discovered nothing and a
+      # non-editable install produced an empty package.
+      - name: Verify the installed distribution imports, from outside the repo
         run: |
+          cd "$RUNNER_TEMP"
           python - <<'PY'
-          import importlib
-          mods = ['gnss', 'rinex', 'ephemeris', 'orbit', 'glonass', 'mlambda',
-                  'geometry', 'gnssobs', 'rtk', 'ppprtk', 'atmosphere',
-                  'constants', 'ppp', 'peph', 'cssrlib', 'cssr_bds',
-                  'cssr_has', 'cssr_mdc', 'cssr_pvs']
-          for m in mods:
-              importlib.import_module('cssrlib.' + m)
-          print(f'{len(mods)} modules import cleanly')
+          import importlib, pkgutil, cssrlib
+          # every module in every layer
+          found = [m.name for m in pkgutil.walk_packages(
+              cssrlib.__path__, cssrlib.__name__ + '.')]
+          for name in found:
+              importlib.import_module(name)
+          # the names that predate the package layout
+          legacy = ['gnss', 'rinex', 'peph', 'ephemeris', 'orbit', 'glonass',
+                    'mlambda', 'geometry', 'gnssobs', 'rtk', 'ppprtk',
+                    'atmosphere', 'constants', 'ppp', 'cssrlib', 'cssr_bds',
+                    'cssr_has', 'cssr_mdc', 'cssr_pvs']
+          for name in legacy:
+              importlib.import_module('cssrlib.' + name)
+          print(f'{len(found)} modules, {len(legacy)} legacy names, all import')
           PY
 
       - name: Run tests

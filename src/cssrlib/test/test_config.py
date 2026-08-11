@@ -10,11 +10,11 @@ a type error.
 import numpy as np
 import pytest
 
-from cssrlib.config import (base_config, ppp_config, ppprtk_config,
+from cssrlib.estimation.config import (base_config, ppp_config, ppprtk_config,
                             rtk_config)
 from cssrlib.gnss import Nav, ProcConfig, uTideModel
-from cssrlib.ppprtk import ppprtkpos
-from cssrlib.rtk import rtkpos
+from cssrlib.engine.ppprtk import ppprtkpos
+from cssrlib.engine.rtk import rtkpos
 
 FACTORIES = (base_config, ppp_config, ppprtk_config, rtk_config)
 

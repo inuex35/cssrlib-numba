@@ -7,7 +7,7 @@ from math import floor
 import numpy as np
 from datetime import datetime, timezone
 
-from cssrlib.gnss_enums import *  # noqa: F401,F403
+from cssrlib.types.enums import *  # noqa: F401,F403
 
 
 class gtime_t():

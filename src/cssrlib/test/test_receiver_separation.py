@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from cssrlib.gnss import Nav, ReceiverState
-from cssrlib.rtk import rtkpos
+from cssrlib.engine.rtk import rtkpos
 from cssrlib.test.golden_harness import setup
 
 
@@ -49,7 +49,7 @@ def test_navigation_data_and_config_are_shared_not_copied():
 
 def test_qcedit_records_into_the_receiver_it_is_given():
     dec, decb, rtk = setup()
-    from cssrlib.ephemeris import satposs
+    from cssrlib.models.ephemeris import satposs
 
     obs = dec.decode_obs()
     obsb = decb.decode_obs()

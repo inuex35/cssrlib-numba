@@ -10,7 +10,7 @@ from cssrlib.gnss import sat2prn, uGNSS, rCST
 from cssrlib.gnss import SAT_SYS_ARR
 from cssrlib.gnss import uTropoModel
 from cssrlib.gnss import time2str
-from cssrlib.mlambda import mlambda
+from cssrlib.core.mlambda import mlambda
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
@@ -84,7 +84,7 @@ def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
     return ix[:nb].copy(), fix
 
 class AmbiguityMixin:
-    """Ambiguity resolution, mixed into :class:`~cssrlib.gnssobs.gnssobs`."""
+    """Ambiguity resolution, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
 
     def ddidx(self, nav, sat):
         """ index for SD to DD transformation matrix D """

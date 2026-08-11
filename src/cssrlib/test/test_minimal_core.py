@@ -2,8 +2,8 @@
 Lock in the module set of this branch.
 
 History: a minimal broadcast-ephemeris RTK core once removed the SSR/CSSR
-(cssrlib.cssrlib), antenna-model (cssrlib.peph) and Earth-tide / phase-wind-up
-(cssrlib.ppp) modules and named the engine module ``pppssr``. Commit 20c0df1
+(cssrlib.ssr.base), antenna-model (cssrlib.peph) and Earth-tide / phase-wind-up
+(cssrlib.models.tides) modules and named the engine module ``pppssr``. Commit 20c0df1
 ("port full PPP-RTK (CLAS) onto the minimal core") brought those modules back
 and renamed ``pppssr`` to ``gnssobs``, but this test was left asserting the
 old layout and failed. It now describes what the tree actually contains.
@@ -14,15 +14,15 @@ import importlib
 import pytest
 
 # Lightweight modules the double-difference RTK workflow needs.
-CORE = ("cssrlib.gnss", "cssrlib.rinex", "cssrlib.ephemeris", "cssrlib.orbit",
-        "cssrlib.glonass", "cssrlib.mlambda", "cssrlib.geometry",
-        "cssrlib.gnssobs", "cssrlib.rtk", "cssrlib.atmosphere",
-        "cssrlib.constants")
+CORE = ("cssrlib.gnss", "cssrlib.rinex", "cssrlib.models.ephemeris", "cssrlib.core.orbit",
+        "cssrlib.models.glonass", "cssrlib.core.mlambda", "cssrlib.core.geometry",
+        "cssrlib.engine.gnssobs", "cssrlib.engine.rtk", "cssrlib.core.atmosphere",
+        "cssrlib.core.constants")
 
 # Modules the CLAS PPP-RTK port re-introduced on top of the minimal core.
-PPPRTK = ("cssrlib.ppp", "cssrlib.peph", "cssrlib.cssrlib", "cssrlib.ppprtk",
-          "cssrlib.cssr_bds", "cssrlib.cssr_has", "cssrlib.cssr_mdc",
-          "cssrlib.cssr_pvs")
+PPPRTK = ("cssrlib.models.tides", "cssrlib.peph", "cssrlib.ssr.base", "cssrlib.engine.ppprtk",
+          "cssrlib.ssr.bds", "cssrlib.ssr.has", "cssrlib.ssr.mdc",
+          "cssrlib.ssr.pvs")
 
 # Modules that stayed removed (recover from the `dev` branch if needed).
 # cssrlib.pppssr is here because it was renamed, not deleted -- importing it
@@ -57,9 +57,9 @@ def test_utidemodel_in_gnss():
 
 def test_engine_class_is_gnssobs():
     """rtkpos and ppprtkpos both subclass the unified engine."""
-    from cssrlib.gnssobs import gnssobs
-    from cssrlib.rtk import rtkpos
-    from cssrlib.ppprtk import ppprtkpos
+    from cssrlib.engine.gnssobs import gnssobs
+    from cssrlib.engine.rtk import rtkpos
+    from cssrlib.engine.ppprtk import ppprtkpos
 
     assert issubclass(rtkpos, gnssobs)
     assert issubclass(ppprtkpos, gnssobs)

@@ -1,0 +1,527 @@
+"""
+integer ambiguity resolution by LAMBDA
+
+reference:
+     [1] P.J.G.Teunissen, The least-square ambiguity decorrelation adjustment:
+         a method for fast GPS ambiguity estimation, J.Geodesy, Vol.70, 65-82,
+         1995
+     [2] X.-W.Chang, X.Yang, T.Zhou, MLAMBDA: A modified LAMBDA method for
+         integer least-squares estimation, J.Geodesy, Vol.79, 552-565, 2005
+
+     [3] A. Ghasemmehdi and E. Agrell, Faster Recursions in Sphere
+        Decoding, IEEE Transactions on Information Theory, vol. 57,
+        no. 6, pp. 3530-3536, June 2011.
+
+     [4] Massarweh, L., Verhagen, S., and Teunissen, P.J.G.
+        New LAMBDA toolbox for mixed-integer models:
+        estimation and evaluation, GPS Solution, 29, 14, 2025.
+
+"""
+
+import math
+import numpy as np
+from numba import njit
+from numpy.linalg import inv
+
+_INV_SQRT2 = 1.0 / math.sqrt(2.0)
+
+
+class LambdaError(np.linalg.LinAlgError):
+    """Ambiguity-resolution failure (e.g. non positive-definite covariance).
+
+    Subclasses ``numpy.linalg.LinAlgError`` (and hence ``Exception``) so that
+    callers embedding LAMBDA in their own solver -- e.g. a GTSAM factor graph
+    doing AR -- can catch it with a normal ``except`` instead of having to
+    trap ``SystemExit``.
+    """
+
+
+@njit(cache=True)
+def _round_to_int(value):
+    return int(np.rint(value))
+
+
+@njit(cache=True)
+def _signed_step(value):
+    if value > 0.0:
+        return 1
+    if value < 0.0:
+        return -1
+    return 0
+
+
+@njit(cache=True)
+def _sr_boost(d):
+    prod = 1.0
+    for i in range(d.size):
+        val = 0.5 / math.sqrt(d[i])
+        cdf = 0.5 * (1.0 + math.erf(val * _INV_SQRT2))
+        prod *= 2.0 * cdf - 1.0
+    return prod
+
+
+@njit(cache=True)
+def _ldldecom(Q):
+    n = Q.shape[0]
+    L = np.zeros((n, n), dtype=np.float64)
+    d = np.zeros(n, dtype=np.float64)
+    A = Q.copy()
+    for i in range(n-1, -1, -1):
+        d[i] = A[i, i]
+        if d[i] <= 0.0:
+            continue
+        L[i, :i+1] = A[i, :i+1]/np.sqrt(d[i])
+        for j in range(i):
+            A[j, :j+1] -= L[i, :j+1]*L[i, j]
+        L[i, :i+1] /= L[i, i]
+    return L, d
+
+
+@njit(cache=True)
+def _reduction(L, d):
+    n = d.size
+    Z = np.eye(n, dtype=np.float64)
+    j = n-2
+    k = n-2
+    # LLL reduction safety bound. Convergence is normally fast on a
+    # well-conditioned Q, but a pathological covariance can keep the
+    # swap-and-reset (j = n-2) loop cycling unboundedly. Cap and return
+    # a partially-reduced (L, d, Z); downstream MLAMBDA still works.
+    LOOPMAX = 10000
+    loops = 0
+    while j >= 0 and loops < LOOPMAX:
+        loops += 1
+        if j <= k:
+            for i in range(j+1, n):
+                mu = np.rint(L[i, j])
+                if mu != 0.0:
+                    L[i:, j] -= mu*L[i:, i]
+                    Z[:, j] -= mu*Z[:, i]
+
+        delta = d[j]+L[j+1, j]**2*d[j+1]
+        if delta+1e-6 < d[j+1]:
+            eta = d[j]/delta
+            lam = d[j+1]*L[j+1, j]/delta
+            d[j] = eta*d[j+1]
+            d[j+1] = delta
+            lj1j = L[j+1, j]
+            if j > 0:
+                for col in range(j):
+                    Lj_col = L[j, col]
+                    Lj1_col = L[j+1, col]
+                    t0 = -lj1j*Lj_col+Lj1_col
+                    t1 = eta*Lj_col+lam*Lj1_col
+                    L[j, col] = t0
+                    L[j+1, col] = t1
+            L[j+1, j] = lam
+            for row in range(j+2, n):
+                tmp = L[row, j]
+                L[row, j] = L[row, j+1]
+                L[row, j+1] = tmp
+            for row in range(n):
+                tmp = Z[row, j]
+                Z[row, j] = Z[row, j+1]
+                Z[row, j+1] = tmp
+            k = j
+            j = n-2
+        else:
+            j -= 1
+    return L, d, Z
+
+
+@njit(cache=True)
+def _msearch(L, d, ahat, ncands):
+    n = d.size
+    Chi2 = 1e18
+    # See _estimILS for LOOPMAX rationale.
+    LOOPMAX = 10000
+    loop_count = 0
+
+    dist = np.zeros(n, dtype=np.float64)
+    acond = np.zeros(n, dtype=np.float64)
+    zcond = np.zeros(n, dtype=np.int32)
+    step = np.zeros(n, dtype=np.int32)
+    afixed = np.zeros((n, ncands), dtype=np.float64)
+    sqnorm = np.full(ncands, 1e18, dtype=np.float64)
+
+    acond[-1] = ahat[-1]
+    zcond[-1] = _round_to_int(acond[-1])
+    left = acond[-1]-zcond[-1]
+    step[-1] = _signed_step(left)
+    if step[-1] == 0:
+        step[-1] = 1
+
+    imax = ncands - 1
+    S = np.zeros((n, n), dtype=np.float64)
+    count = -1
+    endSearch = False
+    k = n-1
+
+    while not endSearch:
+        loop_count += 1
+        if loop_count > LOOPMAX:
+            break
+        newdist = dist[k]+left**2/d[k]
+        if newdist < Chi2:
+            if k != 0:
+                k -= 1
+                dist[k] = newdist
+                S[k, :k+1] = S[k+1, :k+1]+(zcond[k+1]-acond[k+1])*L[k+1, :k+1]
+                acond[k] = ahat[k]+S[k, k]
+                zcond[k] = _round_to_int(acond[k])
+                left = acond[k]-zcond[k]
+                step[k] = _signed_step(left)
+                if step[k] == 0:
+                    step[k] = 1
+            else:
+                if count < ncands-2:
+                    count += 1
+                    afixed[:, count] = zcond
+                    sqnorm[count] = newdist
+                else:
+                    afixed[:, imax] = zcond
+                    sqnorm[imax] = newdist
+
+                    imax = int(np.argmax(sqnorm))
+                    Chi2 = sqnorm[imax]
+
+                zcond[0] += step[0]
+                left = acond[0]-zcond[0]
+                step[0] = -step[0]-_signed_step(step[0])
+        else:
+            if k == n-1:
+                endSearch = True
+            else:
+                k += 1
+                zcond[k] += step[k]
+                left = acond[k]-zcond[k]
+                step[k] = -step[k]-_signed_step(step[k])
+
+    order = np.argsort(sqnorm)
+    sqnorm_sorted = np.zeros_like(sqnorm)
+    afixed_sorted = np.zeros_like(afixed)
+    for idx in range(order.size):
+        sqnorm_sorted[idx] = sqnorm[order[idx]]
+        afixed_sorted[:, idx] = afixed[:, order[idx]]
+
+    return afixed_sorted, sqnorm_sorted
+
+
+@njit(cache=True)
+def _estimILS(L, d, ahat, ncands):
+    n = d.size
+    Chi2 = 1e18
+    # RTKLIB lambda.c LOOPMAX. The MLAMBDA tree walk normally finishes
+    # in <LOOPMAX iterations on a well-conditioned Q, but with a
+    # poorly-conditioned float covariance (large d entries) the search
+    # can spawn a near-unbounded number of branches. RTKLIB exits with
+    # "search loop overflow" at 10000; do the same here so a bad epoch
+    # costs ~10 ms instead of tens of seconds. sqnorm is pre-filled
+    # with 1e18 so an early abort registers as "no fix" via the
+    # downstream `s[1]/s[0] >= thresar` check (1e18/1e18 = 1.0 < 3.0).
+    LOOPMAX = 10000
+    loop_count = 0
+    aborted = False
+
+    k0 = 1 if (ncands == 1 and n > 1) else 0
+
+    afixed = np.zeros((n, ncands), dtype=np.float64)
+    sqnorm = np.full(ncands, 1e18, dtype=np.float64)
+
+    acond = np.zeros(n, dtype=np.float64)
+    zcond = np.zeros(n, dtype=np.int32)
+    left = np.zeros(n, dtype=np.float64)
+    step = np.zeros(n, dtype=np.int32)
+
+    acond[-1] = ahat[-1]
+    zcond[-1] = _round_to_int(acond[-1])
+    left[-1] = acond[-1] - zcond[-1]
+    step[-1] = _signed_step(left[-1])
+    if step[-1] == 0:
+        step[-1] = 1
+
+    count = -1
+    imax = ncands - 1
+
+    S = np.zeros((n, n), dtype=np.float64)
+    dist = np.zeros(n, dtype=np.float64)
+    path = (n-1)*np.ones(n, dtype=np.int32)
+
+    endSearch = False
+    k = n-1
+
+    while not endSearch:
+        newdist = dist[k]+left[k]**2/d[k]
+        while newdist < Chi2:
+            loop_count += 1
+            if loop_count > LOOPMAX:
+                aborted = True
+                endSearch = True
+                break
+            if k != 0:
+                k -= 1
+                dist[k] = newdist
+
+                for j in range(path[k], k, -1):
+                    S[j-1, k] = S[j, k]-left[j]*L[j, k]
+
+                acond[k] = ahat[k]+S[k, k]
+                zcond[k] = _round_to_int(acond[k])
+                left[k] = acond[k]-zcond[k]
+                step[k] = _signed_step(left[k])
+                if step[k] == 0:
+                    step[k] = 1
+            else:
+                if count < ncands-2:
+                    count += 1
+                    afixed[:, count] = zcond
+                    sqnorm[count] = newdist
+                else:
+                    afixed[:, imax] = zcond
+                    sqnorm[imax] = newdist
+
+                    imax = int(np.argmax(sqnorm))
+                    Chi2 = sqnorm[imax]
+
+                k = k0
+                zcond[k] += step[k]
+                left[k] = acond[k]-zcond[k]
+                step[k] = -step[k]-_signed_step(step[k])
+
+            newdist = dist[k] + left[k]**2/d[k]
+
+        if aborted:
+            break
+
+        ilevel = k
+
+        while newdist >= Chi2:
+            loop_count += 1
+            if loop_count > LOOPMAX:
+                aborted = True
+                endSearch = True
+                break
+            if k == n-1:
+                endSearch = True
+                break
+            k += 1
+            zcond[k] += step[k]
+            left[k] = acond[k]-zcond[k]
+            step[k] = -step[k]-_signed_step(step[k])
+            newdist = dist[k] + left[k]**2/d[k]
+
+        if aborted:
+            break
+
+        path[ilevel:k] = k
+        for j in range(ilevel-1, -1, -1):
+            if path[j] < k:
+                path[j] = k
+            else:
+                break
+
+    order = np.argsort(sqnorm)
+    sqnorm_sorted = np.zeros_like(sqnorm)
+    afixed_sorted = np.zeros_like(afixed)
+    for idx in range(order.size):
+        sqnorm_sorted[idx] = sqnorm[order[idx]]
+        afixed_sorted[:, idx] = afixed[:, order[idx]]
+
+    return afixed_sorted, sqnorm_sorted
+
+
+def ldldecom(Q):
+    """ Lt*d*L decomposition of positive symmetric matrix Q """
+    Q_arr = np.asarray(Q, dtype=np.float64)
+    L, d = _ldldecom(Q_arr)
+    if np.any((d < 1e-10)):
+        raise LambdaError("Qah should be positive definite.")
+    return L, d
+
+
+def reduction(L, d):
+    L_arr = np.asarray(L, dtype=np.float64).copy()
+    d_arr = np.asarray(d, dtype=np.float64).copy()
+    return _reduction(L_arr, d_arr)
+
+
+def sr_boost(d):
+    """ Compute the bootstrapped success rate """
+    d_arr = np.asarray(d, dtype=np.float64)
+    return _sr_boost(d_arr)
+
+
+def msearch(L, d, ahat, ncands=2):
+    L_arr = np.asarray(L, dtype=np.float64)
+    d_arr = np.asarray(d, dtype=np.float64)
+    ahat_arr = np.asarray(ahat, dtype=np.float64)
+    return _msearch(L_arr, d_arr, ahat_arr, int(ncands))
+
+
+def estimILS(L, d, ahat, ncands=2):
+    """ ILS estimator by search-and-shrink [4] """
+    L_arr = np.asarray(L, dtype=np.float64)
+    d_arr = np.asarray(d, dtype=np.float64)
+    ahat_arr = np.asarray(ahat, dtype=np.float64)
+    return _estimILS(L_arr, d_arr, ahat_arr, int(ncands))
+
+
+def parsearch(zhat, Qzhat, Z, L, d, Ps, P0=0.995, ncands=2, exclmax=1):
+    """ Partial Ambiguity Resolution """
+    n = len(Qzhat)
+    k = 0
+    # idx = np.argsort(d)[::-1]
+    while Ps < P0 and k < (n-1):
+        k += 1
+
+        # Compute the bootstrapped success rate if the last n-k+1 ambiguities
+        # would be fixed
+        Ps = sr_boost(d[k:])
+
+    if k <= exclmax and Ps > P0:
+
+        # zpar, sqnorm = msearch(L[k:, k:], d[k:], zhat[k:], ncands)
+        zpar, sqnorm = estimILS(L[k:, k:], d[k:], zhat[k:], ncands)
+
+        Qzpar = Qzhat[k:, k:]
+        Zpar = Z[:, k:]
+
+        # First k-1 ambiguities are adjusted based on correlation with the
+        # fixed ambiguities
+        QP = Qzhat[:k, k:]@inv(Qzhat[k:, k:])
+
+        zfix = np.zeros((k, ncands))
+        for i in range(ncands):
+            zfix[:, i] = zhat[:k] - QP@(zhat[k:]-zpar[:, i])
+
+        zfix = np.concatenate((zfix, zpar), axis=0)
+        nfix = n-k
+
+    else:
+
+        zpar = []
+        Qzpar = []
+        Zpar = []
+        sqnorm = []
+        Ps = np.nan
+        zfix = zhat
+        nfix = 0
+
+    return zpar, sqnorm, Qzpar, Zpar, Ps, nfix, zfix
+
+
+def mlambda(ahat, Qahat, ncands=2, parmode=1, P0=0.995):
+    """ modified LAMBDA method for ambiguity resolution """
+    # s = time.perf_counter_ns()
+    L, d = ldldecom(Qahat)
+    # e = time.perf_counter_ns()
+    # t1_ = (e-s)*1e-9
+
+    L, d, Z = reduction(L, d)
+    iZt = np.round(inv(Z.T))
+    zhat = Z.T@ahat
+    Qzhat = L.T@np.diag(d)@L
+
+    Ps = sr_boost(d)
+
+    if parmode == 1:
+        # zfix, s = msearch(L, d, zhat, ncands)
+        zfix, s = estimILS(L, d, zhat, ncands)
+        nfix = len(zhat)
+
+    elif parmode == 2:  # PAR
+        zpar, s, Qzpar, Zpar, Ps, nfix, zfix = parsearch(zhat, Qzhat, Z, L, d,
+                                                         Ps, P0, ncands)
+    elif parmode == 3:
+
+        # zfix, s = estimILS(L, d, zhat, ncands)
+        zfix, s = msearch(L, d, zhat, ncands)
+        nfix = len(zhat)
+
+        thresar = 2.0
+        ratio = s[1]/s[0]
+
+        if ratio < thresar:
+
+            for k in range(len(zhat)):
+                d_ = np.delete(d, k)
+                L_ = np.delete(np.delete(L, k, 0), k, 1)
+                zhat_ = np.delete(d, k)
+
+                zfix_, s = msearch(L_, d_, zhat_, ncands)
+                # zfix, s = estimILS(L_, d_, zhat_, ncands)
+                ratio = s[1]/s[0]
+                if ratio >= thresar:
+                    break
+
+        nfix = len(zhat)-1
+
+    afix_ = iZt@zfix
+    return afix_, s, nfix, Ps
+
+
+if __name__ == '__main__':
+    ncase = 2
+    parmode = 1
+
+    if ncase == 1:
+        Qah = np.array([[6.2900, 5.9780, 0.5440], [
+                       5.9780, 6.2920, 2.3400], [0.5440, 2.3400, 6.2880]])
+        ah = np.array([5.45, 3.10, 2.97])
+    elif ncase == 2:
+        Qah = [[19068.8559508787,	-15783.9722820370,	-17334.2005875975,
+                14411.9239749603,	10055.7170089359,	-14259.2952903872,
+                14858.8484050976,	-12299.1993741839,	-13507.1694819930,
+                11230.0704356810,	7835.62344938376,	-11111.1393808147],
+               [-15783.9722820370,	59027.7038409815,	38142.6927531102,
+                562.717388024645,	-13830.0855960676,	27373.4263013019,
+                -12299.1993747356,	45995.6129934030,	29721.5785731468,
+                438.480887460148,	-10776.6902686912,	21329.9423774758],
+               [-17334.2005875975,	38142.6927531102,	28177.5653893528,
+                -7000.50220497045,	-11695.8674059306,	21886.1680630532,
+                -13507.1694826246,	29721.5785738846,	21956.5440705992,
+                -5454.93697674992,	-9113.66310734779,	17054.1567378091],
+               [14411.9239749603,	562.717388024645,	-7000.50220497045,
+                15605.5082283690,	5039.70281815470,	-9648.96530646004,
+                11230.0704356773,	438.480887731461,	-5454.93697653627,
+                12160.1358938811,	3927.04096307733,	-7518.67445855756],
+               [10055.7170089359,	-13830.0855960676,	-11695.8674059306,
+                5039.70281815470,	6820.77250679480,	-6880.24051213224,
+               7835.62344947055,	-10776.6902682086,	-9113.66310687634,
+               3927.04096320258,	5314.88728015545,	-5361.22656658847],
+               [-14259.2952903872,	27373.4263013019,	21886.1680630532,
+                -9648.96530646004,	-6880.24051213224,	23246.5489626945,
+                -11111.1393809211,	21329.9423779274,	17054.1567375591,
+                -7518.67445829957,	-5361.22656681708,	18114.1936088811],
+               [14858.8484050976,	-12299.1993747356,	-13507.1694826246,
+                11230.0704356773,	7835.62344947055,	-11111.1393809211,
+               11578.3237340013,	-9583.79156943782,	-10525.0669778554,
+               8750.70438611838,	6105.68076067050,	-8658.03053539344],
+               [-12299.1993741839,	45995.6129934030,	29721.5785738846,
+                438.480887731461,	-10776.6902682086,	21329.9423779274,
+                -9583.79156943782,	35840.7376978353,	23159.6717654859,
+                341.673569568934,	-8397.42083743563,	16620.7344703582],
+               [-13507.1694819930,	29721.5785731468,	21956.5440705992,
+                -5454.93697653627,	-9113.66310687634,	17054.1567375591,
+                -10525.0669778554,	23159.6717654859,	17108.9956804894,
+                -4250.60009053988,	-7101.55551676305,	13288.9534523001],
+               [11230.0704356810,	438.480887460148,	-5454.93697674992,
+                12160.1358938811,	3927.04096320258,	-7518.67445829957,
+               8750.70438611838,	341.673569568934,	-4250.60009053988,
+               9475.43086798586,	3060.03207008500,	-5858.70721928591],
+               [7835.62344938376,	-10776.6902686912,	-9113.66310734779,
+                3927.04096307733,	5314.88728015545,	-5361.22656681708,
+               6105.68076067050,	-8397.42083743563,	-7101.55551676305,
+               3060.03207008500,	4141.47090961885,	-4177.57899193454],
+               [-11111.1393808147,	21329.9423774758,	17054.1567378091,
+                -7518.67445855756,	-5361.22656658847,	18114.1936088811,
+                -8658.03053539344,	16620.7344703582,	13288.9534523001,
+                -5858.70721928591,	-4177.57899193454,	14114.9563601479]]
+        Qah = np.array(Qah)
+        ah = [-28490.8566886116, 65752.6299198198, 38830.3666554972,
+              5003.70833517778, -29196.0699104593, -297.658932458787,
+              -22201.0284440701, 51235.8374755528, 30257.7809603224,
+              3899.40332138829, -22749.1853575113, -159.278779870217]
+        ah = np.array(ah)
+
+    afix, sqnorm, nfix, Ps = mlambda(ah, Qah, parmode=parmode, P0=0.95)

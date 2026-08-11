@@ -21,9 +21,9 @@ import numpy as np
 
 import cssrlib.gnss as gn
 import cssrlib.rinex as rn
-from cssrlib.ephemeris import satposs
+from cssrlib.models.ephemeris import satposs
 from cssrlib.gnss import Obs, rSigRnx, uGNSS, uTYP, prn2sat
-from cssrlib.rtk import rtkpos
+from cssrlib.engine.rtk import rtkpos
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                     "data") + os.sep
