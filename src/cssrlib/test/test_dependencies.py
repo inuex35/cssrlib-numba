@@ -21,14 +21,14 @@ import pytest
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Bottom to top. A package may import its own layer or anything below.
-LAYERS = ["core", "types", "models", "fileio", "ssr", "estimation", "engine"]
+LAYERS = ["core", "domain", "models", "fileio", "ssr", "estimation", "engine"]
 DEPTH = {name: i for i, name in enumerate(LAYERS)}
 
 # Names that predate the package layout and stay at the top level as public
 # API. Each forwards into a package; for layering purposes it counts as
 # wherever it forwards to.
 FACADES = {
-    "gnss": "types", "rinex": "fileio", "peph": "models",
+    "gnss": "domain", "rinex": "fileio", "peph": "models",
     "constants": "core", "geometry": "core", "atmosphere": "core",
     "orbit": "core", "mlambda": "core",
     "glonass": "models", "ephemeris": "models", "ppp": "models",
@@ -139,6 +139,30 @@ def test_every_module_lives_in_a_layer():
     assert not stray, (
         f"{sorted(stray)} sit at the top level; move them into a package or "
         f"declare them facades")
+
+
+def test_no_package_shadows_the_standard_library():
+    """A layer directory must not share a name with a stdlib module.
+
+    src/cssrlib is on sys.path whenever a module is run directly from that
+    directory, which several __main__ demo blocks expect. A package named
+    `types` therefore shadowed the stdlib module of that name, and functools
+    imports types -- so the interpreter broke before any cssrlib code ran.
+    That is why the GNSS type layer is called `domain`.
+    """
+    stdlib = set(sys.stdlib_module_names)
+    clashing = sorted(set(LAYERS) & stdlib)
+    assert not clashing, (
+        f"{clashing} shadow standard library modules; running anything from "
+        f"inside src/cssrlib would import these instead")
+
+
+def test_running_a_module_from_inside_the_package_still_works():
+    """The regression above, reproduced end to end."""
+    out = subprocess.run([sys.executable, "-c", "import functools; print('ok')"],
+                         cwd=SRC, capture_output=True, text=True)
+    assert out.returncode == 0 and "ok" in out.stdout, (
+        f"the interpreter cannot start from src/cssrlib:\n{out.stderr}")
 
 
 def test_broadcast_rtk_does_not_load_the_ssr_decoder():

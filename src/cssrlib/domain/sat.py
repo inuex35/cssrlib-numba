@@ -5,7 +5,7 @@ RINEX identifier, with the lookup tables that make it O(1)."""
 
 import numpy as np
 
-from cssrlib.types.enums import *  # noqa: F401,F403
+from cssrlib.domain.enums import *  # noqa: F401,F403
 
 
 def prn2sat(sys, prn):
