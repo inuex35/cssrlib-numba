@@ -5,8 +5,8 @@ ReceiverState and FilterState."""
 
 import numpy as np
 
-from cssrlib.types.enums import *  # noqa: F401,F403
-from cssrlib.types.timescale import *  # noqa: F401,F403
+from cssrlib.domain.enums import *  # noqa: F401,F403
+from cssrlib.domain.timescale import *  # noqa: F401,F403
 
 
 class STOParam():

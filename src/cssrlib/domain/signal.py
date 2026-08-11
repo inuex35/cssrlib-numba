@@ -4,8 +4,8 @@ rSigRnx parses three-character RINEX observation codes and resolves them
 to frequencies and wavelengths."""
 
 
-from cssrlib.types.enums import *  # noqa: F401,F403
-from cssrlib.types.sat import *  # noqa: F401,F403
+from cssrlib.domain.enums import *  # noqa: F401,F403
+from cssrlib.domain.sat import *  # noqa: F401,F403
 
 
 class rSigRnx():

@@ -3,7 +3,7 @@
 The package is organised in layers, bottom to top:
 
     cssrlib.core         pure numerics and vocabulary
-    cssrlib.types        constellations, signals, time, coordinates, structs
+    cssrlib.domain       constellations, signals, time, coordinates, structs
     cssrlib.models       orbits, Earth frames, tides, antennas, biases
     cssrlib.fileio       RINEX reading and writing
     cssrlib.ssr          State-Space Representation correction decoding

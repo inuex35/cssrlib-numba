@@ -9,10 +9,10 @@ import bitstruct.c as bs
 
 from cssrlib.core import geometry as _geom_fast
 from cssrlib.core import atmosphere as _atm_fast
-from cssrlib.types.enums import *  # noqa: F401,F403
+from cssrlib.domain.enums import *  # noqa: F401,F403
 # star imports skip underscore names
-from cssrlib.types.enums import _ensure_vec
-from cssrlib.types.timescale import *  # noqa: F401,F403
+from cssrlib.domain.enums import _ensure_vec
+from cssrlib.domain.timescale import *  # noqa: F401,F403
 
 
 def vnorm(r):
