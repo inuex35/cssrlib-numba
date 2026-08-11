@@ -392,7 +392,7 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
     return dant
 
 
-def antModelRx(nav, pos, e, sigs, rtype=1):
+def antModelRx(ant, pos, e, sigs):
     """
     Range correction for receiving antenna
 
@@ -402,16 +402,18 @@ def antModelRx(nav, pos, e, sigs, rtype=1):
 
     Parameters
     ----------
-    nav : Nav()
-        contains the PCO/PCV corrections for rover and base antenna
+    ant : pcv_t
+        The receiving antenna's PCO/PCV model. This was previously the
+        whole Nav plus an ``rtype`` flag selecting ``nav.rcv_ant`` or
+        ``nav.rcv_ant_b``. nav was read for nothing else, nothing passed
+        rtype != 1, and nothing ever set rcv_ant_b -- so the base branch
+        would have dereferenced None had anything reached it.
     pos : np.array
         Receiver position in ECEF
     e : np.array of float
         Line-of-sight vector in ECEF from receiver to satellite
     sigs : list of rRnxSig
         RINEX signal codes
-    rtype : int
-        flag 1 for rover, else for base PCO/PCV
 
     Returns
     -------
@@ -422,13 +424,6 @@ def antModelRx(nav, pos, e, sigs, rtype=1):
     # Convert LOS vector to local antenna frame
     #
     e = ecef2enu(pos, e)
-
-    # Select rover or base antenna
-    #
-    if rtype == 1:  # for rover
-        ant = nav.rcv_ant
-    else:  # for base
-        ant = nav.rcv_ant_b
 
     # Elevation angle, zenith angle and zenith angle grid
     #

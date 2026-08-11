@@ -226,11 +226,10 @@ class NavData():
         self.glo_ch = {}
 
         self.sat_ant = None
-        # rcv_ant / rcv_ant_b are one antenna each for two receivers; they
-        # collapse into a single per-receiver field once ReceiverState owns
-        # the receiver-specific data.
+        # One receiver antenna. There was a second, rcv_ant_b, for the base
+        # -- never set by anything, and reachable only through an rtype flag
+        # nothing passed.
         self.rcv_ant = None
-        self.rcv_ant_b = None
 
         # SSR correction placeholder
         self.dorb = np.zeros(uGNSS.MAXSAT)
@@ -385,7 +384,7 @@ _NAV_FIELDS = {
     "data": ("eph", "geph", "seph", "peph", "pclk", "ne", "nc",
              "ion", "ion_gim", "ion_region", "sto_prm", "eop_prm",
              "ion_prm", "eop", "leaps", "glo_ch",
-             "sat_ant", "rcv_ant", "rcv_ant_b",
+             "sat_ant", "rcv_ant",
              "dorb", "dclk", "dsis", "sis"),
     "cfg": ("nf", "pmode", "rmode", "ephopt", "elmin", "elmaskar",
             "armode", "parmode", "par_P0", "thresar", "thresslip",

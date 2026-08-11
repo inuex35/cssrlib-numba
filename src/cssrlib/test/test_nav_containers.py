@@ -118,12 +118,23 @@ def test_geometry_free_table_is_per_receiver():
     assert rover.gf[5] == 0.0, "receivers share a table"
 
 
-def test_receiver_antenna_pair_still_awaits_step_6():
-    """rcv_ant / rcv_ant_b are still two fields, unlike gf.
+def test_receiver_antenna_is_a_single_field():
+    """rcv_ant_b is gone, like gf_r before it.
 
-    Collapsing them means changing peph.antModelRx, which selects between
-    them on an rtype argument; that belongs with the peph split. Nothing
-    currently passes rtype != 1, so rcv_ant_b is unreachable today.
+    antModelRx took the whole Nav plus an rtype flag to choose between the
+    two; it now takes the antenna itself, so there is nothing to choose.
     """
     nav = Nav(nf=2)
-    assert hasattr(nav.data, "rcv_ant") and hasattr(nav.data, "rcv_ant_b")
+    assert hasattr(nav.data, "rcv_ant")
+    assert not hasattr(nav.data, "rcv_ant_b"), (
+        "rcv_ant_b came back; antModelRx should take an antenna, not a Nav")
+
+
+def test_antenna_model_takes_an_antenna_not_a_nav():
+    import inspect
+    from cssrlib.models.antenna import antModelRx
+
+    params = list(inspect.signature(antModelRx).parameters)
+    assert params[0] == "ant", f"first parameter is {params[0]!r}"
+    assert "rtype" not in params, "the rover/base flag is back"
+    assert "nav" not in params
