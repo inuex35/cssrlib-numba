@@ -276,7 +276,7 @@ def _ddcov_numpy(nb, Ri, Rj, nv):
 class ObservationModelMixin:
     """Residual computation, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
 
-    def zdres(self, obs, cs, bsx, rs, vs, dts, rr, rtype=1):
+    def zdres(self, obs, cs, bsx, rs, vs, dts, rr):
         """ non-differential residual """
 
         _c = rCST.CLIGHT
@@ -509,8 +509,8 @@ class ObservationModelMixin:
                 antrPR = np.zeros(len(sigsPR))
                 antrCP = np.zeros(len(sigsCP))
             else:
-                antrPR = antModelRx(self.nav, pos, e[i, :], sigsPR, rtype)
-                antrCP = antModelRx(self.nav, pos, e[i, :], sigsCP, rtype)
+                antrPR = antModelRx(self.nav.rcv_ant, pos, e[i, :], sigsPR)
+                antrCP = antModelRx(self.nav.rcv_ant, pos, e[i, :], sigsCP)
 
             if self.nav.ephopt == 4:
 
