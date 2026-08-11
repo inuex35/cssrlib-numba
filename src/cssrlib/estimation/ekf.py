@@ -5,7 +5,7 @@ RTK is not driven from here -- see rtkpos.prepare_double_difference_measurements
 
 import numpy as np
 
-from cssrlib.ephemeris import satposs
+from cssrlib.models.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
 from cssrlib.gnss import uTropoModel
 from cssrlib.gnss import time2str, timediff
@@ -23,7 +23,7 @@ TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
 TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 class FilterMixin:
-    """Filtering and the epoch driver, mixed into :class:`~cssrlib.gnssobs.gnssobs`."""
+    """Filtering and the epoch driver, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
 
     def udstate(self, obs):
         """ time propagation of states and initialize """

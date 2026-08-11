@@ -11,12 +11,12 @@ from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
 from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, geodist, satazel
 from cssrlib.gnss import time2str, gpst2utc, tropmapf
 from cssrlib.gnss import time2doy
-from cssrlib.atmosphere import tropmapf_niell
-from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
-from cssrlib.ppp import shapiro, windupcorr
+from cssrlib.core.atmosphere import tropmapf_niell
+from cssrlib.models.tides import tidedisp, tidedispIERS2010, uTideModel
+from cssrlib.models.tides import shapiro, windupcorr
 from cssrlib.peph import antModelRx, antModelTx
-from cssrlib.ssr_types import sCType
-from cssrlib.ssr_types import sCSSRTYPE as sc
+from cssrlib.core.ssr_types import sCType
+from cssrlib.core.ssr_types import sCSSRTYPE as sc
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
@@ -274,7 +274,7 @@ def _ddcov_numpy(nb, Ri, Rj, nv):
     return R
 
 class ObservationModelMixin:
-    """Residual computation, mixed into :class:`~cssrlib.gnssobs.gnssobs`."""
+    """Residual computation, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
 
     def zdres(self, obs, cs, bsx, rs, vs, dts, rr, rtype=1):
         """ non-differential residual """

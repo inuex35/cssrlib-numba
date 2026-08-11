@@ -6,7 +6,7 @@ imported by everything else."""
 from enum import IntEnum
 import numpy as np
 
-from cssrlib import constants as _c
+from cssrlib.core import constants as _c
 
 
 gpst0 = [1980, 1, 6, 0, 0, 0]  # GPS system time reference

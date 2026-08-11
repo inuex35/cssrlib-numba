@@ -15,7 +15,7 @@ from cssrlib.gnss import rSigRnx, uGNSS, uTYP, uSIG
 
 import numpy as np
 
-from cssrlib.frames import orb2ecef
+from cssrlib.models.frames import orb2ecef
 
 
 NMAX = 10

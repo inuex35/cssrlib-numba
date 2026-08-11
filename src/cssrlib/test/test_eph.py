@@ -11,7 +11,7 @@ import pytest
 
 from cssrlib.rinex import rnxdec
 from cssrlib.gnss import Nav, epoch2time, prn2sat, uGNSS, timeadd, ecef2pos
-from cssrlib.ephemeris import findeph, eph2pos
+from cssrlib.models.ephemeris import findeph, eph2pos
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data") + os.sep
 NAVFILE = DATA + "30340780.21q"

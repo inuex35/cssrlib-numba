@@ -10,9 +10,9 @@ external estimators (e.g. GTSAM factor-graph RTK):
 
 import numpy as np
 
-from cssrlib.mlambda import mlambda, ldldecom, LambdaError
+from cssrlib.core.mlambda import mlambda, ldldecom, LambdaError
 from cssrlib.gnss import Nav, Obs, rSigRnx, uGNSS, uTYP, prn2sat, gpst2time
-from cssrlib.rtk import DDMeasurements, rtkpos
+from cssrlib.engine.rtk import DDMeasurements, rtkpos
 
 
 def test_mlambda_raises_catchable_exception():

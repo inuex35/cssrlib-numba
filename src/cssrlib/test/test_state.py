@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from cssrlib.gnss import uGNSS
-from cssrlib.state import StateLayout
+from cssrlib.estimation.layout import StateLayout
 
 MAXSAT = int(uGNSS.MAXSAT)
 
@@ -93,7 +93,7 @@ def test_iono_follows_tropo():
 def test_engine_accessors_delegate_to_the_layout():
     """gnssobs.IB / II / IT must agree with the layout that sized nav."""
     from cssrlib.gnss import Nav
-    from cssrlib.rtk import rtkpos
+    from cssrlib.engine.rtk import rtkpos
 
     nav = Nav(nf=2)
     rtk = rtkpos(nav, np.zeros(3))
@@ -109,7 +109,7 @@ def test_engine_accessors_delegate_to_the_layout():
 
 def test_from_nav_round_trips():
     from cssrlib.gnss import Nav
-    from cssrlib.rtk import rtkpos
+    from cssrlib.engine.rtk import rtkpos
 
     nav = Nav(nf=2)
     rtk = rtkpos(nav, np.zeros(3))

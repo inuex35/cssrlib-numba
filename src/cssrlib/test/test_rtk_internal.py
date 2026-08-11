@@ -1,7 +1,7 @@
 import numpy as np
 from types import SimpleNamespace
 
-from cssrlib.rtk import rtkpos
+from cssrlib.engine.rtk import rtkpos
 
 
 def test_build_frequency_diff_primary_only():

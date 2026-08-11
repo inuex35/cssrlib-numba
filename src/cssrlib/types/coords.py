@@ -7,12 +7,12 @@ from math import floor, sin, cos, sqrt, asin, fabs, tan
 import numpy as np
 import bitstruct.c as bs
 
-from cssrlib import geometry as _geom_fast
-from cssrlib import atmosphere as _atm_fast
-from cssrlib.gnss_enums import *  # noqa: F401,F403
+from cssrlib.core import geometry as _geom_fast
+from cssrlib.core import atmosphere as _atm_fast
+from cssrlib.types.enums import *  # noqa: F401,F403
 # star imports skip underscore names
-from cssrlib.gnss_enums import _ensure_vec
-from cssrlib.gnss_time import *  # noqa: F401,F403
+from cssrlib.types.enums import _ensure_vec
+from cssrlib.types.timescale import *  # noqa: F401,F403
 
 
 def vnorm(r):

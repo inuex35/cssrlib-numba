@@ -8,7 +8,7 @@ import numpy as np
 from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
 from cssrlib.gnss import uTropoModel, ecef2pos, geodist, satazel
 from cssrlib.gnss import time2str, timediff, gpst2utc
-from cssrlib.ppp import tidedisp, tidedispIERS2010, uTideModel
+from cssrlib.models.tides import tidedisp, tidedispIERS2010, uTideModel
 
 # format definition for logging
 fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
@@ -23,7 +23,7 @@ TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
 TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 class QualityControlMixin:
-    """Quality control, mixed into :class:`~cssrlib.gnssobs.gnssobs`."""
+    """Quality control, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
 
     def qcedit(self, obs, rs, dts, svh, rr=None, rcv=None):
         """ Coarse quality control and editing of observations
