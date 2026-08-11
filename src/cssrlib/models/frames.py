@@ -9,9 +9,9 @@ Created on Sun Aug 22 21:01:49 2021
 @author: ruihi
 """
 
-from cssrlib.domain.gnss import epoch2time, time2epoch, timeadd, timediff, gtime_t
-from cssrlib.domain.gnss import gpst2utc, utc2gpst
-from cssrlib.domain.gnss import rCST
+from cssrlib.gnss import epoch2time, time2epoch, timeadd, timediff, gtime_t
+from cssrlib.gnss import gpst2utc, utc2gpst
+from cssrlib.gnss import rCST
 
 import numpy as np
 from math import sin, cos

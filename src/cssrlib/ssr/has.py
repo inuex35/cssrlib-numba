@@ -10,7 +10,7 @@ import numpy as np
 import bitstruct as bs
 import galois
 from cssrlib.ssr.base import cssr, sCSSR, sCSSRTYPE
-from cssrlib.domain.gnss import gpst2time
+from cssrlib.gnss import gpst2time
 from binascii import unhexlify
 
 

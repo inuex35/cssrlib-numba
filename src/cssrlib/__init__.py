@@ -45,14 +45,15 @@ import sys
 
 __version__ = "1.2.1"
 
-#: Pre-layer module name -> the module that now provides it. gnss, rinex and
-#: peph are not single modules but facades over a whole layer, so they live
-#: inside the layer they aggregate rather than becoming a plain alias.
+#: Pre-layer module name -> the module that now provides it.
+#:
+#: gnss, rinex and peph are NOT here. They aggregate a whole layer, and more
+#: importantly third-party code derives paths from them: the official GTSAM
+#: gnss_frontend.py locates the bundled RINEX as
+#: ``dirname(cssrlib.gnss.__file__)/data``. A module's location is part of
+#: its contract when the package ships data beside it, so those three stay
+#: real files at the package root.
 LEGACY_MODULES = {
-    "gnss": "domain.gnss",
-    "rinex": "fileio.rinex",
-    "peph": "models.peph",
-
     "constants": "core.constants",
     "geometry": "core.geometry",
     "atmosphere": "core.atmosphere",

@@ -20,11 +20,38 @@ from cssrlib.test.golden_harness import GOLDEN, build_golden
 
 REGEN = "python -m cssrlib.test.golden_harness"
 
-# The pipeline is deterministic on fixed input, so the reference should
-# reproduce exactly. A tiny tolerance absorbs nothing but genuine float
-# noise from differing BLAS builds.
+# The pipeline is deterministic on fixed input, so most of the reference
+# reproduces exactly; a tiny tolerance absorbs float noise from differing
+# BLAS builds.
 RTOL = 1e-9
 ATOL = 1e-9
+
+# Residuals are the exception, and not because they are noisier -- because
+# np.allclose measures the tolerance on the *result*, which is the wrong
+# scale for a number produced by cancellation. A residual is a metre-sized
+# difference of range-sized operands: zdres.y subtracts a ~2e7 m geometric
+# range from a ~2e7 m pseudorange, and sdres.v additionally subtracts
+# carrier-ambiguity states that reach ~1.7e7 m. The result inherits the
+# rounding of operands ten million times its own size, so its error floor is
+# set by them, not by itself. One ULP at 1.7e7 is 1.9e-9 m, and CI saw two
+# BLAS builds differ by exactly 2 and 4 of them -- under any tolerance keyed
+# on the residual.
+#
+# These arrays therefore get an absolute floor drawn from their operands.
+# 1e-6 m is ~500 ULP of a 2e7 m range, far above what recombination can
+# produce, and three orders below the millimetre at which a change to RTK
+# residuals means anything -- so every regression this file exists to catch
+# is still visible.
+CANCELLATION_ATOL = 1e-6
+CANCELLATION = ("dd.sdP", "dd.sdL", "zdres.y", "sdres.v", "synth.v")
+
+
+def tolerance(key):
+    """(rtol, atol) for one recorded array."""
+    stage_field = key.split("#")[0]
+    if stage_field in CANCELLATION:
+        return RTOL, CANCELLATION_ATOL
+    return RTOL, ATOL
 
 
 @pytest.fixture(scope="module")
@@ -70,9 +97,10 @@ def test_pipeline_matches_reference(current, reference):
             continue
         if got.size == 0:
             continue
-        if not np.allclose(got, want, rtol=RTOL, atol=ATOL, equal_nan=True):
+        rtol, atol = tolerance(key)
+        if not np.allclose(got, want, rtol=rtol, atol=atol, equal_nan=True):
             worst = float(np.nanmax(np.abs(got - want)))
-            value_diffs.append(f"{key}: max|d|={worst:.6g}")
+            value_diffs.append(f"{key}: max|d|={worst:.6g} (atol={atol:g})")
 
     report = []
     if shape_diffs:
@@ -83,6 +111,23 @@ def test_pipeline_matches_reference(current, reference):
                       "\n  ".join(value_diffs[:10]))
     assert not report, ("pipeline output moved.\n" + "\n".join(report) +
                         f"\n\nIf intended: {REGEN}")
+
+
+def test_the_loosened_tolerance_still_names_real_arrays(reference):
+    """A rename must not leave CANCELLATION silently pointing at nothing.
+
+    The entry would go dead and the array it was meant to cover would fall
+    back to the strict floor -- a flaky test rather than a failing one, which
+    is worse.
+    """
+    present = {k.split("#")[0] for k in reference}
+    dead = sorted(set(CANCELLATION) - present)
+    assert not dead, f"{dead} are in CANCELLATION but no longer recorded"
+
+    loose = [k for k in reference if tolerance(k)[1] == CANCELLATION_ATOL]
+    assert len(loose) < len(reference) // 2, (
+        f"{len(loose)} of {len(reference)} arrays are on the loosened "
+        f"tolerance; it is meant for residuals, not for the whole reference")
 
 
 def test_multignss_sdres_is_covered(reference):

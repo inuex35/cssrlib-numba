@@ -7,7 +7,7 @@ the engine, which is what let ``rtkpos`` override ``base_process`` with a
 return contract its parent did not expect -- a Liskov violation that showed
 up as a singular matrix rather than as a type error.
 
-Each factory here returns a fully populated :class:`~cssrlib.domain.gnss.ProcConfig`.
+Each factory here returns a fully populated :class:`~cssrlib.gnss.ProcConfig`.
 Pass one to the engine instead of picking a subclass.
 
     nav = Nav(nf=2)
@@ -21,7 +21,7 @@ without copying the whole block::
 
 import numpy as np
 
-from cssrlib.domain.gnss import ProcConfig, uIonoModel, uTropoModel, uTideModel
+from cssrlib.gnss import ProcConfig, uIonoModel, uTropoModel, uTideModel
 
 
 def _apply(cfg, overrides):

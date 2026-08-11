@@ -6,10 +6,10 @@ RTKLIB-compatible variants, and fix-and-hold."""
 import numpy as np
 from numba import njit
 
-from cssrlib.domain.gnss import sat2prn, uGNSS, rCST
-from cssrlib.domain.gnss import SAT_SYS_ARR
-from cssrlib.domain.gnss import uTropoModel
-from cssrlib.domain.gnss import time2str
+from cssrlib.gnss import sat2prn, uGNSS, rCST
+from cssrlib.gnss import SAT_SYS_ARR
+from cssrlib.gnss import uTropoModel
+from cssrlib.gnss import time2str
 from cssrlib.core.mlambda import mlambda
 
 # format definition for logging

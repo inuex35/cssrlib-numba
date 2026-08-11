@@ -7,14 +7,14 @@ carry the inner loops live here with them."""
 import numpy as np
 from numba import njit
 
-from cssrlib.domain.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
-from cssrlib.domain.gnss import uTropoModel, ecef2pos, tropmodel, geodist, satazel
-from cssrlib.domain.gnss import time2str, gpst2utc, tropmapf
-from cssrlib.domain.gnss import time2doy
+from cssrlib.gnss import sat2id, sat2prn, rSigRnx, uTYP, uGNSS, rCST
+from cssrlib.gnss import uTropoModel, ecef2pos, tropmodel, geodist, satazel
+from cssrlib.gnss import time2str, gpst2utc, tropmapf
+from cssrlib.gnss import time2doy
 from cssrlib.core.atmosphere import tropmapf_niell
 from cssrlib.models.tides import tidedisp, tidedispIERS2010, uTideModel
 from cssrlib.models.tides import shapiro, windupcorr
-from cssrlib.models.peph import antModelRx, antModelTx
+from cssrlib.peph import antModelRx, antModelTx
 from cssrlib.core.ssr_types import sCType
 from cssrlib.core.ssr_types import sCSSRTYPE as sc
 

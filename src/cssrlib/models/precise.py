@@ -7,11 +7,11 @@ Created on Sun Aug 22 21:01:49 2021
 @author: ruihi
 """
 
-from cssrlib.domain.gnss import id2sat, sat2id
-from cssrlib.domain.gnss import time2epoch, timeadd, timediff, gtime_t
-from cssrlib.domain.gnss import str2time, time2doy
-from cssrlib.domain.gnss import time2gpst
-from cssrlib.domain.gnss import rCST, uGNSS
+from cssrlib.gnss import id2sat, sat2id
+from cssrlib.gnss import time2epoch, timeadd, timediff, gtime_t
+from cssrlib.gnss import str2time, time2doy
+from cssrlib.gnss import time2gpst
+from cssrlib.gnss import rCST, uGNSS
 
 import numpy as np
 from math import pow, sin, cos

@@ -2,11 +2,11 @@
 
 import numpy as np
 from pathlib import Path
-from cssrlib.domain.gnss import uGNSS, uTYP, rSigRnx
-from cssrlib.domain.gnss import epoch2time
-from cssrlib.domain.gnss import prn2sat, char2sys
-from cssrlib.domain.gnss import Obs
-from cssrlib.domain.gnss import id2sat
+from cssrlib.gnss import uGNSS, uTYP, rSigRnx
+from cssrlib.gnss import epoch2time
+from cssrlib.gnss import prn2sat, char2sys
+from cssrlib.gnss import Obs
+from cssrlib.gnss import id2sat
 
 
 class ObsFileMixin:
