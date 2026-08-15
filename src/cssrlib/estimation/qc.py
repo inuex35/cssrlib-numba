@@ -146,10 +146,16 @@ class QualityControlMixin:
 
                 # Cycle  slip check by LLI
                 #
+                # LLI=1 is a cycle-slip notification, not a bad observation:
+                # flag the band so udstate() resets its ambiguity, but keep
+                # the measurement (RTKLIB-style). Editing it out instead
+                # leaves nav.slip without a producer, so the reset in
+                # udstate() never fires and the stale ambiguity survives the
+                # slip.
                 if obs.lli[j, f] == 1:
-                    rcv.edt[i, f] = 1
+                    rcv.slip[i, f] = 1
                     if self.nav.monlevel > 0:
-                        self.nav.fout.write("{}  {} - edit {:4s} - LLI\n"
+                        self.nav.fout.write("{}  {} - slip {:4s} - LLI\n"
                                             .format(time2str(obs.t),
                                                     sat2id(sat_i),
                                                     sigsCP[f].str()))
@@ -220,9 +226,14 @@ class QualityControlMixin:
                         rcv.gf[sat_i] = gf1
                     if gf0 != 0.0 and gf1 != 0.0 and \
                             abs(gf1-gf0) > self.nav.thresslip:
-                        rcv.edt[i, 0:2] = 1
+                        # A GF jump is a cycle slip, not a bad range: flag
+                        # both bands for an ambiguity reset and keep them.
+                        # Editing them out drops the whole satellite through
+                        # the strict all-band gate below, and again leaves
+                        # nav.slip unset.
+                        rcv.slip[i, 0:2] = 1
                         if self.nav.monlevel > 0:
-                            self.nav.fout.write(" {}  {} - edit {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
+                            self.nav.fout.write(" {}  {} - slip {:4s} - GF slip gf0 {:6.3f} gf1 {:6.3f} gf0-gf1 {:6.3f} \n"
                                                 .format(time2str(obs.t),
                                                         sat2id(sat_i),
                                                         sig1.str(), gf0, gf1,
