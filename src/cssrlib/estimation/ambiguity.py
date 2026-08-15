@@ -144,6 +144,10 @@ class AmbiguityMixin:
 
         # MLAMBDA ILS
         b, s, nfix, Ps = mlambda(y, Qb, parmode=parmode, P0=P0)
+        # Stash s[0], s[1] so wrappers can read the ratio without re-running
+        # mlambda (restored: the DD-minimal core did this here).
+        self._last_s0 = float(s[0]) if len(s) > 0 else 0.0
+        self._last_s1 = float(s[1]) if len(s) > 1 else 0.0
         if nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
                          s[1]/s[0] >= self.nav.thresar):
             self.nav.xa = self.nav.x[0:na].copy()
