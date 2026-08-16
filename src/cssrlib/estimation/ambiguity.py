@@ -83,6 +83,29 @@ def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
 
     return ix[:nb].copy(), fix
 
+class ArResult:
+    """Outcome of one ambiguity resolution, as data.
+
+    The historical interface leaves half its answer on the engine
+    (``_last_s0``/``_last_s1``) and half on ``nav`` (fix marks, xa, Pa);
+    a refactor once dropped the stash and nothing failed until the
+    accuracy did. This carries the whole answer in the return value.
+    """
+
+    __slots__ = ('nb', 'xa', 's0', 's1')
+
+    def __init__(self, nb, xa, s0, s1):
+        self.nb, self.xa, self.s0, self.s1 = int(nb), xa, float(s0), float(s1)
+
+    @property
+    def ratio(self):
+        return 0.0 if self.s0 <= 0.0 else self.s1 / self.s0
+
+    @property
+    def fixed(self):
+        return self.nb > 0
+
+
 class AmbiguityMixin:
     """Ambiguity resolution, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
 
@@ -96,12 +119,33 @@ class AmbiguityMixin:
         nav.fix = fix
         return ix
 
-    def restamb(self, bias, nb):
-        """ restore SD ambiguity """
-        nv = 0
+    def restamb(self, bias, nb, ix=None):
+        """ restore SD ambiguity
+
+        ``bias`` is mlambda's fixed double differences, one per row of the
+        DD index ``ix`` that ``ddidx`` built -- same rows, same order. When
+        ``ix`` is passed the restoration is exactly that correspondence:
+        the reference keeps its float value and each target follows from
+        its fixed difference.
+
+        Without ``ix`` (older callers), the pairing is re-derived from
+        ``nav.fix``, which silently assumes what ddidx happens to do: the
+        reference is the lowest-PRN fix==2 satellite of each (system, band)
+        and the targets follow in PRN order. Change the reference choice
+        and this path scrambles every ambiguity -- measured once at 1190
+        fixes collapsing to 1. New callers should pass ``ix``.
+        """
         xa = self.nav.x.copy()
         xa[0:self.nav.na] = self.nav.xa[0:self.nav.na]
 
+        if ix is not None:
+            for row in range(len(ix)):
+                i_ref, j = int(ix[row, 0]), int(ix[row, 1])
+                xa[i_ref] = self.nav.x[i_ref]
+                xa[j] = xa[i_ref] - bias[row]
+            return xa
+
+        nv = 0
         for m in range(uGNSS.GNSSMAX):
             for f in range(self.nav.nf):
                 n = 0
@@ -119,6 +163,23 @@ class AmbiguityMixin:
                     xa[index[i]] = xa[index[0]]-bias[nv]
                     nv += 1
         return xa
+
+    def resolve_ambiguities(self, sat):
+        """Resolve integers and return the whole outcome as an ArResult.
+
+        Chooses the variant by ``nav.rtklib_mode`` (the demo5 retry when
+        set, plain LAMBDA otherwise) and packs the ratio pair into the
+        result instead of leaving it on the engine. The nav side effects
+        documented on the underlying methods still happen -- they are the
+        interface to fix-and-hold and validation -- but no caller of this
+        method needs to read hidden attributes for the answer.
+        """
+        if getattr(self.nav, 'rtklib_mode', False):
+            nb, xa = self.resamb_lambda_rtklib(sat)
+        else:
+            nb, xa = self.resamb_lambda(sat, self.nav.parmode,
+                                        self.nav.par_P0)
+        return ArResult(nb, xa, self._last_s0, self._last_s1)
 
     def resamb_lambda(self, sat, parmode=1, P0=0.995):
         """ resolve integer ambiguity using LAMBDA method
@@ -177,8 +238,8 @@ class AmbiguityMixin:
             self.nav.xa -= K@y
             self.nav.Pa -= K@Qab.T
 
-            # restore SD ambiguity
-            xa = self.restamb(bias, nb)
+            # restore SD ambiguity from the very pairs the search used
+            xa = self.restamb(bias, nb, ix=ix)
 
         elif parmode == 2 and nfix == 0:
             nb = 0
