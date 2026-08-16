@@ -84,6 +84,55 @@ def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
     return ix[:nb].copy(), fix
 
 
+def solve_dd_ambiguities(x, P, ix, na, nx, parmode, P0, thresar):
+    """The double-difference LAMBDA core, free of any engine.
+
+    Everything the search needs arrives as arguments -- the float state and
+    covariance, the DD index ``ix`` from ``ddidx``, the layout bounds and
+    the acceptance parameters -- and everything it decides comes back in a
+    :class:`DdSolution`. No ``nav``, no stash: the callable is the contract,
+    which is what lets it be unit-tested (and swapped) without standing up a
+    gnssobs engine. The mixin methods below are adapters that apply its
+    side effects to ``nav``.
+
+    Acceptance mirrors resamb_lambda exactly: ``nfix > 0`` and (partial AR,
+    a degenerate ``s0 <= 0`` search, or the ratio test).
+    """
+    y = x[ix[:, 0]] - x[ix[:, 1]]
+    DP = P[ix[:, 0], na:nx] - P[ix[:, 1], na:nx]
+    Qb = DP[:, ix[:, 0] - na] - DP[:, ix[:, 1] - na]
+    Qab = P[0:na, ix[:, 0]] - P[0:na, ix[:, 1]]
+
+    b, s, nfix, Ps = mlambda(y, Qb, parmode=parmode, P0=P0)
+    s0 = float(s[0]) if len(s) > 0 else 0.0
+    s1 = float(s[1]) if len(s) > 1 else 0.0
+    accepted = bool(nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
+                                  s[1]/s[0] >= thresar))
+    sol = DdSolution(accepted=accepted, s0=s0, s1=s1, nfix=int(nfix),
+                     ps=float(Ps), bias=b[:, 0])
+    if accepted:
+        y_res = y - b[:, 0]
+        K = Qab @ np.linalg.inv(Qb)
+        sol.xa_corr = K @ y_res          # subtract from x[0:na]
+        sol.Pa_corr = K @ Qab.T          # subtract from P[0:na, 0:na]
+    return sol
+
+
+class DdSolution:
+    """What :func:`solve_dd_ambiguities` decided, and nothing else."""
+
+    __slots__ = ('accepted', 's0', 's1', 'nfix', 'ps', 'bias',
+                 'xa_corr', 'Pa_corr')
+
+    def __init__(self, accepted, s0, s1, nfix, ps, bias):
+        self.accepted = accepted
+        self.s0, self.s1 = s0, s1
+        self.nfix, self.ps = nfix, ps
+        self.bias = bias
+        self.xa_corr = None
+        self.Pa_corr = None
+
+
 def guarded_ratio(s0, s1):
     """s1/s0 with 0.0 for "no ratio formed" (s0 <= 0).
 
@@ -231,37 +280,21 @@ class AmbiguityMixin:
             print("no valid DD")
             return -1, -1
 
-        # y=D*xc, Qb=D*Qc*D', Qab=Qac*D'
-        y = self.nav.x[ix[:, 0]]-self.nav.x[ix[:, 1]]
-        DP = self.nav.P[ix[:, 0], na:nx]-self.nav.P[ix[:, 1], na:nx]
-        Qb = DP[:, ix[:, 0]-na]-DP[:, ix[:, 1]-na]
-        Qab = self.nav.P[0:na, ix[:, 0]]-self.nav.P[0:na, ix[:, 1]]
-
-        # MLAMBDA ILS
-        b, s, nfix, Ps = mlambda(y, Qb, parmode=parmode, P0=P0)
-        # Stash s[0], s[1] so wrappers can read the ratio without re-running
-        # mlambda (restored: the DD-minimal core did this here).
-        self._last_s0 = float(s[0]) if len(s) > 0 else 0.0
-        self._last_s1 = float(s[1]) if len(s) > 1 else 0.0
-        if nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
-                         s[1]/s[0] >= self.nav.thresar):
-            self.nav.xa = self.nav.x[0:na].copy()
-            self.nav.Pa = self.nav.P[0:na, 0:na].copy()
-            bias = b[:, 0]
-            y -= b[:, 0]
-            K = Qab@np.linalg.inv(Qb)
-            self.nav.xa -= K@y
-            self.nav.Pa -= K@Qab.T
-
-            # restore SD ambiguity from the very pairs the search used
-            xa = self.restamb(bias, ix)
-
-        elif parmode == 2 and nfix == 0:
+        # The search itself is engine-free; this method is its nav adapter.
+        sol = solve_dd_ambiguities(self.nav.x, self.nav.P, ix, na, nx,
+                                   parmode, P0, self.nav.thresar)
+        self._last_s0 = sol.s0
+        self._last_s1 = sol.s1
+        if sol.accepted:
+            self.nav.xa = self.nav.x[0:na].copy() - sol.xa_corr
+            self.nav.Pa = self.nav.P[0:na, 0:na].copy() - sol.Pa_corr
+            xa = self.restamb(sol.bias, ix)
+        elif parmode == 2 and sol.nfix == 0:
             nb = 0
             if self.nav.monlevel > 0:
                 self.nav.fout.write(
                     "{:s}  Ps={:3.2f} nfix={:d}\n".
-                    format(time2str(self.nav.t), Ps, nfix))
+                    format(time2str(self.nav.t), sol.ps, sol.nfix))
         else:
             nb = 0
 
