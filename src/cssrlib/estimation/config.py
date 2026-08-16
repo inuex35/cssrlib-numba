@@ -112,7 +112,6 @@ def rtk_config(nf=2, pmode=1, **overrides):
     # RTKLIB-compatible ambiguity-resolution extras.
     cfg.maxtdiff = 30.0      # [s] max age of base observations
     cfg.rtklib_mode = False
-    cfg.excsat = 0
     cfg.arfilter = True
     cfg.minfixsats = 4
     return _apply(cfg, overrides)
