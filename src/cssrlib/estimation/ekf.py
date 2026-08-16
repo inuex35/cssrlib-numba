@@ -414,7 +414,8 @@ class FilterMixin:
         self.nav.smode = 5  # 4: fixed ambiguities, 5: float ambiguities
 
         if self.nav.armode > 0:
-            nb, xa = self.resamb_lambda(sat, self.nav.parmode, self.nav.par_P0)
+            res = self.resolve_ambiguities(sat)
+            nb, xa = res.nb, res.xa
             if nb > 0:
                 # Use position with fixed ambiguities xa
                 yu, eu, elu = self.zdres(obs, cs, bsx, rs, vs, dts, xa[0:3])

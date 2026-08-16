@@ -100,6 +100,14 @@ class ArResult:
 
     @property
     def ratio(self):
+        """s1/s0, or 0.0 when no ratio was formed.
+
+        Informational, not the acceptance rule: under ``parmode == 2`` a
+        fix is accepted by partial AR's own criterion with s0/s1 being
+        subset search norms, and a degenerate ILS fix with ``s0 <= 0`` is
+        accepted outright -- both can be ``fixed`` with a ratio below
+        ``nav.thresar``. Gate on ``fixed``, log ``ratio``.
+        """
         return 0.0 if self.s0 <= 0.0 else self.s1 / self.s0
 
     @property
@@ -109,6 +117,12 @@ class ArResult:
 
 class AmbiguityMixin:
     """Ambiguity resolution, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
+
+    # The ratio stash always exists, even before the first resolution: a
+    # fresh engine whose first epoch has no valid DD reads these in
+    # resamb_lambda_rtklib before anything has written them.
+    _last_s0 = 0.0
+    _last_s1 = 0.0
 
     def ddidx(self, nav, sat):
         """ index for SD to DD transformation matrix D """
@@ -140,10 +154,11 @@ class AmbiguityMixin:
         xa[0:self.nav.na] = self.nav.xa[0:self.nav.na]
 
         if ix is not None:
-            for row in range(len(ix)):
-                i_ref, j = int(ix[row, 0]), int(ix[row, 1])
-                xa[i_ref] = self.nav.x[i_ref]
-                xa[j] = xa[i_ref] - bias[row]
+            # xa starts as nav.x with only [0:na] overwritten and every
+            # ambiguity slot is >= na, so each reference still holds its
+            # float value -- nothing to restore before differencing.
+            if len(ix):
+                xa[ix[:, 1]] = xa[ix[:, 0]] - bias[:len(ix)]
             return xa
 
         nv = 0
@@ -174,13 +189,14 @@ class AmbiguityMixin:
         documented on the underlying methods still happen -- they are the
         interface to fix-and-hold and validation -- but no caller of this
         method needs to read hidden attributes for the answer.
+
+        Scope: this dispatches the two standard variants only. The caller
+        keeps the ``nav.armode > 0`` on/off decision (as the EKF loop
+        does), and ``resamb_lambda_subsets`` remains a separate, explicit
+        call. Note the rtklib variant fixes ``parmode = 1`` internally --
+        demo5 fidelity -- so ``nav.parmode = 2`` applies only when
+        ``rtklib_mode`` is off.
         """
-        # resamb_lambda's "no valid DD" early return does not touch the
-        # stash, so without this reset the result would carry the ratio of
-        # some PREVIOUS resolution next to nb <= 0 -- exactly the hidden-state
-        # trap this method exists to close. Zero reads as "no ratio formed".
-        self._last_s0 = 0.0
-        self._last_s1 = 0.0
         if getattr(self.nav, 'rtklib_mode', False):
             nb, xa = self.resamb_lambda_rtklib(sat)
         else:
@@ -217,6 +233,11 @@ class AmbiguityMixin:
         nx = self.nav.nx
         na = self.nav.na
         xa = np.zeros(na)
+        # The stash must describe THIS call: the no-valid-DD early return
+        # below would otherwise leave the previous resolution's ratio for
+        # the rtklib wrapper to consume as if it were current.
+        self._last_s0 = 0.0
+        self._last_s1 = 0.0
         ix = self.ddidx(self.nav, sat)
         nb = len(ix)
         if nb <= 0:
@@ -281,7 +302,10 @@ class AmbiguityMixin:
         * ``nav.prev_ratio1`` follows every pass-1 ratio;
           ``nav.prev_ratio2`` only successful ones.
         * ``nav.excsat`` is the round-robin cursor: the excluded satellite
-          when the retry fixed, else 0.
+          when the retry fixed, 0 when the retry ran and failed -- and
+          UNCHANGED on the two exits where no retry ran (too few satellites,
+          or nothing excludable). The cursor then resumes from the last
+          epoch that actually tried an exclusion.
 
         Any drop-in replacement must reproduce all of these -- their absence
         does not fail loudly, it changes which satellite the next epoch
