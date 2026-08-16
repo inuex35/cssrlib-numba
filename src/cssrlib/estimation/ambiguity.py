@@ -126,6 +126,25 @@ class AmbiguityMixin:
         parmode selects the LAMBDA search (1: full ILS, 2: partial AR); it is
         nav.parmode, not nav.armode -- the latter switches AR on/off and
         fix-and-hold.
+
+        Inputs, beyond the arguments
+        ----------------------------
+        ``sat`` is a presence check only; the actual selection is
+        ``nav.vsat == 1`` (see ``ddidx``). The float state and covariance
+        come from ``nav.x`` / ``nav.P``; elevations from ``nav.el``.
+
+        Side effects -- these are API, callers depend on each
+        -----------------------------------------------------
+        * ``nav.fix`` is (re)written on **every** call by ``ddidx``, accepted
+          or not: 2 for satellites in a double difference, 1 for a candidate
+          below ``nav.elmaskar`` encountered before the reference in PRN
+          order. ``restamb`` and fix-and-hold read it.
+        * ``self._last_s0`` / ``self._last_s1``: the ILS ratio pair, stashed
+          for wrappers and gates. A refactor once dropped this and cost a
+          silent 0.85 m 3D RMS downstream before it was found.
+        * on acceptance only: ``nav.xa`` / ``nav.Pa``, the fixed
+          non-ambiguity state via ``xa = x - K (y_float - b)`` -- the sign
+          and the content of K are part of the contract too.
         """
         nx = self.nav.nx
         na = self.nav.na
@@ -185,6 +204,20 @@ class AmbiguityMixin:
         It excludes at most one satellite per epoch, picked by
         round-robin order across SVs (RTKLIB-style), rather than by
         the largest float-integer gap.
+
+        Side effects, on top of resamb_lambda's
+        ---------------------------------------
+        * ``nav.lock`` is updated on **every** call, accepted or not:
+          incremented for satellites valid this epoch, reset for the rest.
+          Next epoch's ``arfilter`` reads ``lock == 1`` as freshly acquired.
+        * ``nav.prev_ratio1`` follows every pass-1 ratio;
+          ``nav.prev_ratio2`` only successful ones.
+        * ``nav.excsat`` is the round-robin cursor: the excluded satellite
+          when the retry fixed, else 0.
+
+        Any drop-in replacement must reproduce all of these -- their absence
+        does not fail loudly, it changes which satellite the next epoch
+        excludes, and the trajectories quietly part.
         """
         # Update lock counters: increment for sats valid this epoch,
         # reset to 0 for the rest. Mirrors RTKLIB ssat[].lock semantics.
