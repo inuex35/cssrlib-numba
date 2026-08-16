@@ -83,6 +83,7 @@ def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
 
     return ix[:nb].copy(), fix
 
+
 class ArResult:
     """Outcome of one ambiguity resolution, as data.
 
@@ -174,6 +175,12 @@ class AmbiguityMixin:
         interface to fix-and-hold and validation -- but no caller of this
         method needs to read hidden attributes for the answer.
         """
+        # resamb_lambda's "no valid DD" early return does not touch the
+        # stash, so without this reset the result would carry the ratio of
+        # some PREVIOUS resolution next to nb <= 0 -- exactly the hidden-state
+        # trap this method exists to close. Zero reads as "no ratio formed".
+        self._last_s0 = 0.0
+        self._last_s1 = 0.0
         if getattr(self.nav, 'rtklib_mode', False):
             nb, xa = self.resamb_lambda_rtklib(sat)
         else:
