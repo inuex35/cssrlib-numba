@@ -312,6 +312,12 @@ class ProcConfig():
         self.maxtdiff = 30.0     # [s] max age of base observations
         self.rtklib_mode = False
         self.excsat = 0          # last excluded satellite (round-robin)
+        # arfilter's memory: pass-1 ratio of the previous epoch, and of the
+        # previous *successful* epoch. Read before ever being written on a
+        # cold start unless initialized here (AttributeError at the first
+        # failed ratio test, which is exactly the epoch AR most needs).
+        self.prev_ratio1 = 0.0
+        self.prev_ratio2 = 0.0
         self.arfilter = True     # drop newly-acquired sats that hurt ratio
         self.minfixsats = 4      # minimum sats required to attempt AR
 
@@ -394,6 +400,7 @@ _NAV_FIELDS = {
             "sig_p0", "sig_v0", "sig_ztd0", "sig_ion0", "sig_n0",
             "sig_qp", "sig_qv", "sig_qztd", "sig_qion", "sig_qb",
             "maxtdiff", "rtklib_mode", "excsat", "arfilter",
+            "prev_ratio1", "prev_ratio2",
             "minfixsats"),
     "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
             "el", "phw", "sat", "t", "tt", "smode", "nsat"),
