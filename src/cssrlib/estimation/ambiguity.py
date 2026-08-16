@@ -83,8 +83,46 @@ def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
 
     return ix[:nb].copy(), fix
 
+
+class ArResult:
+    """Outcome of one ambiguity resolution, as data.
+
+    The historical interface leaves half its answer on the engine
+    (``_last_s0``/``_last_s1``) and half on ``nav`` (fix marks, xa, Pa);
+    a refactor once dropped the stash and nothing failed until the
+    accuracy did. This carries the whole answer in the return value.
+    """
+
+    __slots__ = ('nb', 'xa', 's0', 's1')
+
+    def __init__(self, nb, xa, s0, s1):
+        self.nb, self.xa, self.s0, self.s1 = int(nb), xa, float(s0), float(s1)
+
+    @property
+    def ratio(self):
+        """s1/s0, or 0.0 when no ratio was formed.
+
+        Informational, not the acceptance rule: under ``parmode == 2`` a
+        fix is accepted by partial AR's own criterion with s0/s1 being
+        subset search norms, and a degenerate ILS fix with ``s0 <= 0`` is
+        accepted outright -- both can be ``fixed`` with a ratio below
+        ``nav.thresar``. Gate on ``fixed``, log ``ratio``.
+        """
+        return 0.0 if self.s0 <= 0.0 else self.s1 / self.s0
+
+    @property
+    def fixed(self):
+        return self.nb > 0
+
+
 class AmbiguityMixin:
     """Ambiguity resolution, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
+
+    # The ratio stash always exists, even before the first resolution: a
+    # fresh engine whose first epoch has no valid DD reads these in
+    # resamb_lambda_rtklib before anything has written them.
+    _last_s0 = 0.0
+    _last_s1 = 0.0
 
     def ddidx(self, nav, sat):
         """ index for SD to DD transformation matrix D """
@@ -96,12 +134,34 @@ class AmbiguityMixin:
         nav.fix = fix
         return ix
 
-    def restamb(self, bias, nb):
-        """ restore SD ambiguity """
-        nv = 0
+    def restamb(self, bias, nb, ix=None):
+        """ restore SD ambiguity
+
+        ``bias`` is mlambda's fixed double differences, one per row of the
+        DD index ``ix`` that ``ddidx`` built -- same rows, same order. When
+        ``ix`` is passed the restoration is exactly that correspondence:
+        the reference keeps its float value and each target follows from
+        its fixed difference.
+
+        Without ``ix`` (older callers), the pairing is re-derived from
+        ``nav.fix``, which silently assumes what ddidx happens to do: the
+        reference is the lowest-PRN fix==2 satellite of each (system, band)
+        and the targets follow in PRN order. Change the reference choice
+        and this path scrambles every ambiguity -- measured once at 1190
+        fixes collapsing to 1. New callers should pass ``ix``.
+        """
         xa = self.nav.x.copy()
         xa[0:self.nav.na] = self.nav.xa[0:self.nav.na]
 
+        if ix is not None:
+            # xa starts as nav.x with only [0:na] overwritten and every
+            # ambiguity slot is >= na, so each reference still holds its
+            # float value -- nothing to restore before differencing.
+            if len(ix):
+                xa[ix[:, 1]] = xa[ix[:, 0]] - bias[:len(ix)]
+            return xa
+
+        nv = 0
         for m in range(uGNSS.GNSSMAX):
             for f in range(self.nav.nf):
                 n = 0
@@ -120,16 +180,64 @@ class AmbiguityMixin:
                     nv += 1
         return xa
 
+    def resolve_ambiguities(self, sat):
+        """Resolve integers and return the whole outcome as an ArResult.
+
+        Chooses the variant by ``nav.rtklib_mode`` (the demo5 retry when
+        set, plain LAMBDA otherwise) and packs the ratio pair into the
+        result instead of leaving it on the engine. The nav side effects
+        documented on the underlying methods still happen -- they are the
+        interface to fix-and-hold and validation -- but no caller of this
+        method needs to read hidden attributes for the answer.
+
+        Scope: this dispatches the two standard variants only. The caller
+        keeps the ``nav.armode > 0`` on/off decision (as the EKF loop
+        does), and ``resamb_lambda_subsets`` remains a separate, explicit
+        call. Note the rtklib variant fixes ``parmode = 1`` internally --
+        demo5 fidelity -- so ``nav.parmode = 2`` applies only when
+        ``rtklib_mode`` is off.
+        """
+        if getattr(self.nav, 'rtklib_mode', False):
+            nb, xa = self.resamb_lambda_rtklib(sat)
+        else:
+            nb, xa = self.resamb_lambda(sat, self.nav.parmode,
+                                        self.nav.par_P0)
+        return ArResult(nb, xa, self._last_s0, self._last_s1)
+
     def resamb_lambda(self, sat, parmode=1, P0=0.995):
         """ resolve integer ambiguity using LAMBDA method
 
         parmode selects the LAMBDA search (1: full ILS, 2: partial AR); it is
         nav.parmode, not nav.armode -- the latter switches AR on/off and
         fix-and-hold.
+
+        Inputs, beyond the arguments
+        ----------------------------
+        ``sat`` is a presence check only; the actual selection is
+        ``nav.vsat == 1`` (see ``ddidx``). The float state and covariance
+        come from ``nav.x`` / ``nav.P``; elevations from ``nav.el``.
+
+        Side effects -- these are API, callers depend on each
+        -----------------------------------------------------
+        * ``nav.fix`` is (re)written on **every** call by ``ddidx``, accepted
+          or not: 2 for satellites in a double difference, 1 for a candidate
+          below ``nav.elmaskar`` encountered before the reference in PRN
+          order. ``restamb`` and fix-and-hold read it.
+        * ``self._last_s0`` / ``self._last_s1``: the ILS ratio pair, stashed
+          for wrappers and gates. A refactor once dropped this and cost a
+          silent 0.85 m 3D RMS downstream before it was found.
+        * on acceptance only: ``nav.xa`` / ``nav.Pa``, the fixed
+          non-ambiguity state via ``xa = x - K (y_float - b)`` -- the sign
+          and the content of K are part of the contract too.
         """
         nx = self.nav.nx
         na = self.nav.na
         xa = np.zeros(na)
+        # The stash must describe THIS call: the no-valid-DD early return
+        # below would otherwise leave the previous resolution's ratio for
+        # the rtklib wrapper to consume as if it were current.
+        self._last_s0 = 0.0
+        self._last_s1 = 0.0
         ix = self.ddidx(self.nav, sat)
         nb = len(ix)
         if nb <= 0:
@@ -158,8 +266,8 @@ class AmbiguityMixin:
             self.nav.xa -= K@y
             self.nav.Pa -= K@Qab.T
 
-            # restore SD ambiguity
-            xa = self.restamb(bias, nb)
+            # restore SD ambiguity from the very pairs the search used
+            xa = self.restamb(bias, nb, ix=ix)
 
         elif parmode == 2 and nfix == 0:
             nb = 0
@@ -185,6 +293,23 @@ class AmbiguityMixin:
         It excludes at most one satellite per epoch, picked by
         round-robin order across SVs (RTKLIB-style), rather than by
         the largest float-integer gap.
+
+        Side effects, on top of resamb_lambda's
+        ---------------------------------------
+        * ``nav.lock`` is updated on **every** call, accepted or not:
+          incremented for satellites valid this epoch, reset for the rest.
+          Next epoch's ``arfilter`` reads ``lock == 1`` as freshly acquired.
+        * ``nav.prev_ratio1`` follows every pass-1 ratio;
+          ``nav.prev_ratio2`` only successful ones.
+        * ``nav.excsat`` is the round-robin cursor: the excluded satellite
+          when the retry fixed, 0 when the retry ran and failed -- and
+          UNCHANGED on the two exits where no retry ran (too few satellites,
+          or nothing excludable). The cursor then resumes from the last
+          epoch that actually tried an exclusion.
+
+        Any drop-in replacement must reproduce all of these -- their absence
+        does not fail loudly, it changes which satellite the next epoch
+        excludes, and the trajectories quietly part.
         """
         # Update lock counters: increment for sats valid this epoch,
         # reset to 0 for the rest. Mirrors RTKLIB ssat[].lock semantics.
