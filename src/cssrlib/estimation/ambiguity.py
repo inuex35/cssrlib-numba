@@ -84,6 +84,17 @@ def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
     return ix[:nb].copy(), fix
 
 
+def guarded_ratio(s0, s1):
+    """s1/s0 with 0.0 for "no ratio formed" (s0 <= 0).
+
+    This is the *reporting* convention only. The acceptance test in
+    resamb_lambda is different on purpose: there ``s[0] <= 0`` accepts the
+    fix outright (a degenerate perfect-residual ILS solution), it does not
+    reject. Keep the two meanings apart.
+    """
+    return 0.0 if s0 <= 0.0 else s1 / s0
+
+
 class ArResult:
     """Outcome of one ambiguity resolution, as data.
 
@@ -108,7 +119,7 @@ class ArResult:
         accepted outright -- both can be ``fixed`` with a ratio below
         ``nav.thresar``. Gate on ``fixed``, log ``ratio``.
         """
-        return 0.0 if self.s0 <= 0.0 else self.s1 / self.s0
+        return guarded_ratio(self.s0, self.s1)
 
     @property
     def fixed(self):
@@ -134,50 +145,26 @@ class AmbiguityMixin:
         nav.fix = fix
         return ix
 
-    def restamb(self, bias, nb, ix=None):
+    def restamb(self, bias, ix):
         """ restore SD ambiguity
 
         ``bias`` is mlambda's fixed double differences, one per row of the
-        DD index ``ix`` that ``ddidx`` built -- same rows, same order. When
-        ``ix`` is passed the restoration is exactly that correspondence:
-        the reference keeps its float value and each target follows from
-        its fixed difference.
+        DD index ``ix`` that ``ddidx`` built -- same rows, same order. The
+        reference of each pair keeps its float value (``xa`` starts as
+        ``nav.x`` and ambiguity slots are never overwritten before this
+        point) and each target follows from its fixed difference.
 
-        Without ``ix`` (older callers), the pairing is re-derived from
-        ``nav.fix``, which silently assumes what ddidx happens to do: the
-        reference is the lowest-PRN fix==2 satellite of each (system, band)
-        and the targets follow in PRN order. Change the reference choice
-        and this path scrambles every ambiguity -- measured once at 1190
-        fixes collapsing to 1. New callers should pass ``ix``.
+        Until 2d98f8b this re-derived the pairing from ``nav.fix`` under
+        the assumption that the reference is the lowest-PRN fix==2
+        satellite -- true of what ddidx does, and catastrophically wrong
+        the moment anyone changes that choice (measured: 1190 fixes
+        collapsing to 1, silently). The pairs themselves are the interface
+        now; there is no fallback to re-arm that trap.
         """
         xa = self.nav.x.copy()
         xa[0:self.nav.na] = self.nav.xa[0:self.nav.na]
-
-        if ix is not None:
-            # xa starts as nav.x with only [0:na] overwritten and every
-            # ambiguity slot is >= na, so each reference still holds its
-            # float value -- nothing to restore before differencing.
-            if len(ix):
-                xa[ix[:, 1]] = xa[ix[:, 0]] - bias[:len(ix)]
-            return xa
-
-        nv = 0
-        for m in range(uGNSS.GNSSMAX):
-            for f in range(self.nav.nf):
-                n = 0
-                index = []
-                for i in range(uGNSS.MAXSAT):
-                    sys, _ = sat2prn(i+1)
-                    if sys != m or self.nav.fix[i, f] != 2:
-                        continue
-                    index.append(self.IB(i+1, f, self.nav.na))
-                    n += 1
-                if n < 2:
-                    continue
-                xa[index[0]] = self.nav.x[index[0]]
-                for i in range(1, n):
-                    xa[index[i]] = xa[index[0]]-bias[nv]
-                    nv += 1
+        if len(ix):
+            xa[ix[:, 1]] = xa[ix[:, 0]] - bias[:len(ix)]
         return xa
 
     def resolve_ambiguities(self, sat):
@@ -267,7 +254,7 @@ class AmbiguityMixin:
             self.nav.Pa -= K@Qab.T
 
             # restore SD ambiguity from the very pairs the search used
-            xa = self.restamb(bias, nb, ix=ix)
+            xa = self.restamb(bias, ix)
 
         elif parmode == 2 and nfix == 0:
             nb = 0
@@ -323,8 +310,7 @@ class AmbiguityMixin:
                     self.nav.lock[i, f] = 0
 
         nb, xa = self.resamb_lambda(sat, 1, self.nav.par_P0)
-        ratio = (0.0 if self._last_s0 <= 0.0
-                 else self._last_s1 / self._last_s0)
+        ratio = guarded_ratio(self._last_s0, self._last_s1)
         if nb > 0:
             self.nav.prev_ratio1 = ratio
             self.nav.prev_ratio2 = ratio
@@ -374,9 +360,8 @@ class AmbiguityMixin:
             self.nav.vsat[exc-1, :] = vsat_row
 
         if nb > 0:
-            self.nav.prev_ratio2 = (
-                0.0 if self._last_s0 <= 0.0
-                else self._last_s1 / self._last_s0)
+            self.nav.prev_ratio2 = guarded_ratio(self._last_s0,
+                                                 self._last_s1)
             self.nav.excsat = exc
             return nb, xa
 
@@ -410,7 +395,7 @@ class AmbiguityMixin:
         """
         nb_full, xa_full = self.resamb_lambda_rtklib(sat)
         s0_full, s1_full = self._last_s0, self._last_s1
-        ratio_full = (0.0 if s0_full <= 0.0 else s1_full / s0_full)
+        ratio_full = guarded_ratio(s0_full, s1_full)
 
         # Strong full-set fix → no need to search subsets.
         if nb_full > 0 and ratio_full >= self.nav.thresar + 0.5:
@@ -446,7 +431,7 @@ class AmbiguityMixin:
                 if nb_s <= 0:
                     continue
                 s0_s, s1_s = self._last_s0, self._last_s1
-                ratio_s = (0.0 if s0_s <= 0.0 else s1_s / s0_s)
+                ratio_s = guarded_ratio(s0_s, s1_s)
                 if ratio_s < self.nav.thresar:
                     continue
                 if ratio_s > best_ratio:

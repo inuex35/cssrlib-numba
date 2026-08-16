@@ -311,13 +311,6 @@ class ProcConfig():
         # RTKLIB-compatible AR extras
         self.maxtdiff = 30.0     # [s] max age of base observations
         self.rtklib_mode = False
-        self.excsat = 0          # last excluded satellite (round-robin)
-        # arfilter's memory: pass-1 ratio of the previous epoch, and of the
-        # previous *successful* epoch. Read before ever being written on a
-        # cold start unless initialized here (AttributeError at the first
-        # failed ratio test, which is exactly the epoch AR most needs).
-        self.prev_ratio1 = 0.0
-        self.prev_ratio2 = 0.0
         self.arfilter = True     # drop newly-acquired sats that hurt ratio
         self.minfixsats = 4      # minimum sats required to attempt AR
 
@@ -340,6 +333,15 @@ class ReceiverState():
         # the carrier phase has been valid. Resets to 0 on outage; used by
         # rtklib_mode arfilter to demote newly-acquired satellites.
         self.lock = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
+        # The demo5 retry's memory, per receiver like the lock counters it
+        # works with: the round-robin cursor, and arfilter's two previous
+        # ratios (pass-1 of the last epoch / of the last successful one).
+        # These are runtime state, not configuration -- excsat lived in
+        # ProcConfig for a while and prev_ratio1/2 fell through the gap
+        # between the containers entirely (cold-start AttributeError).
+        self.excsat = 0
+        self.prev_ratio1 = 0.0
+        self.prev_ratio2 = 0.0
         # Cycle-slip flag (LLI or GF slip detected at qcedit). Causes
         # ambiguity reset in udstate without dropping the observation.
         # Cleared by udstate after the reset is applied.
@@ -399,10 +401,10 @@ _NAV_FIELDS = {
             "maxout", "excl_sat", "rb", "baseline", "eratio", "err",
             "sig_p0", "sig_v0", "sig_ztd0", "sig_ion0", "sig_n0",
             "sig_qp", "sig_qv", "sig_qztd", "sig_qion", "sig_qb",
-            "maxtdiff", "rtklib_mode", "excsat", "arfilter",
-            "prev_ratio1", "prev_ratio2",
+            "maxtdiff", "rtklib_mode", "arfilter",
             "minfixsats"),
     "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
+            "excsat", "prev_ratio1", "prev_ratio2",
             "el", "phw", "sat", "t", "tt", "smode", "nsat"),
     "flt": ("x", "P", "xa", "Pa", "y", "na", "nq", "nx", "ntrop", "niono"),
 }
