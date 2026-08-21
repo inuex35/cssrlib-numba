@@ -25,3 +25,7 @@ dependencies = [
     "scipy",
     "matplotlib",
 ]
+
+[project.optional-dependencies]
+# uTideModel.IERS2010 silently degrades to the simplified model without it.
+tides = ["pysolid"]

@@ -6,10 +6,15 @@ from cssrlib.gnss import timediff
 
 
 def sync_obs(dec, decb, dt_th=0.1):
-    """ sync observation between rover and base """
+    """ sync observation between rover and base.
+
+    Returns the EOF sentinel (default Obs, t == 0) for a stream that
+    ran out — previously that sentinel made ``dt`` a huge negative
+    number and this loop never terminated.
+    """
     obs = dec.decode_obs()
     obsb = decb.decode_obs()
-    while True:
+    while not (_obs_is_eof(obs) or _obs_is_eof(obsb)):
         dt = timediff(obs.t, obsb.t)
         if np.abs(dt) <= dt_th:
             break
