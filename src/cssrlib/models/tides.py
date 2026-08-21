@@ -11,6 +11,8 @@ try:
 except ImportError:
     solid_grid = None
 
+_warned_no_pysolid = False
+
 
 def nut_iau1980(t_, f):
     """ define IAU1980 nutation """
@@ -392,7 +394,16 @@ def tidedispIERS2010(tutc, pos, erpv=None):
     Wrapper for solid_grid() method of PySolid module to compute Earth tide
     displacement corrections according to the IERS2010 conventions
     """
-    if solid_grid is None:  # workaround for missing PySolid
+    if solid_grid is None:  # PySolid not installed
+        global _warned_no_pysolid
+        if not _warned_no_pysolid:
+            import warnings
+            warnings.warn(
+                "uTideModel.IERS2010 requested but pysolid is not "
+                "installed — falling back to the simplified solid-tide "
+                "model. pip install pysolid (or cssrlib[tides]).",
+                RuntimeWarning)
+            _warned_no_pysolid = True
         return tidedisp(tutc, pos, erpv)
 
     e = time2epoch(tutc)
