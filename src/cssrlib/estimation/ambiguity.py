@@ -109,9 +109,9 @@ def solve_dd_ambiguities(x, P, ix, na, nx, parmode, P0, thresar):
     accepted = bool(nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
                                   s[1]/s[0] >= thresar))
     sol = DdSolution(accepted=accepted, s0=s0, s1=s1, nfix=int(nfix),
-                     ps=float(Ps), bias=b[:, 0])
+                     ps=float(Ps), bias=(b[:, 0] if b.ndim == 2 else b))
     if accepted:
-        y_res = y - b[:, 0]
+        y_res = y - (b[:, 0] if b.ndim == 2 else b)
         K = Qab @ np.linalg.inv(Qb)
         sol.xa_corr = K @ y_res          # subtract from x[0:na]
         sol.Pa_corr = K @ Qab.T          # subtract from P[0:na, 0:na]
