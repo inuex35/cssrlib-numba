@@ -213,12 +213,50 @@ def _multignss_sdres(out):
             _store(out, f"synth.vsat#{tag}", nav.vsat)
 
 
+def _ar_path(out):
+    """The LAMBDA core over synthetic problems with known integers.
+
+    This is the stage the review flagged as uncovered: four PRs touched
+    ambiguity resolution while golden recorded nothing past ddcov. The
+    weak parmode=2 cases drive parsearch into its failure branch (more
+    than exclmax candidates to drop), which crashed with a 1-D bias
+    before the b.ndim guard.
+    """
+    from cssrlib.core.mlambda import mlambda
+    rng = np.random.default_rng(7)
+    n = 8
+    truth = rng.integers(-300, 300, size=n).astype(float)
+
+    cases = []
+    # strong: near-integer floats, tight covariance -> clean fix
+    cases.append(("strong", truth + rng.normal(0, 0.01, n),
+                  np.eye(n) * 1e-4))
+    # weak: heavy noise, inflated correlated covariance -> parsearch
+    # must drop candidates (parmode=2 failure path)
+    A = rng.normal(size=(n, n))
+    Q = A @ A.T * 0.4 + np.eye(n) * 0.3
+    cases.append(("weak", truth + rng.normal(0, 0.8, n), Q))
+
+    for tag, y, Q in cases:
+        for parmode in (1, 2):
+            b, sres, nfix, ps = mlambda(y.copy(), Q.copy(),
+                                        parmode=parmode, P0=0.995)
+            bias = b[:, 0] if b.ndim == 2 else b
+            _store(out, f"ar.bias#{tag}p{parmode}", np.asarray(bias, float))
+            _store(out, f"ar.s#{tag}p{parmode}", np.asarray(sres, float))
+            _store(out, f"ar.nfix#{tag}p{parmode}",
+                   np.array([int(nfix)], int))
+            _store(out, f"ar.ps#{tag}p{parmode}",
+                   np.array([float(ps)], float))
+
+
 def build_golden():
     """Every recorded array, keyed by ``stage.field#index``."""
     out = {}
     _dd_path(out)
     _observation_model(out)
     _multignss_sdres(out)
+    _ar_path(out)
     return out
 
 
