@@ -277,8 +277,9 @@ class AmbiguityMixin:
         ix = self.ddidx(self.nav, sat)
         nb = len(ix)
         if nb <= 0:
-            print("no valid DD")
-            return -1, -1
+            if self.nav.monlevel > 0 and self.nav.fout is not None:
+                self.nav.fout.write("resamb_lambda: no valid DD\n")
+            return 0, None
 
         # The search itself is engine-free; this method is its nav adapter.
         sol = solve_dd_ambiguities(self.nav.x, self.nav.P, ix, na, nx,

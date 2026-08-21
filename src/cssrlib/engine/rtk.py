@@ -255,7 +255,7 @@ class rtkpos(gnssobs):
             return None
 
         if rsb is None or dtsb is None or svhb is None:
-            rsb, vsb, dtsb, svhb, _ = satposs(obsb, self.nav)
+            rsb, vsb, dtsb, svhb, _ = satposs(obsb, self.base_nav)
 
         iu, obs_sd = self.single_differences(
             obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb
