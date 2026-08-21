@@ -71,7 +71,8 @@ def current():
 def test_reference_covers_every_stage(reference):
     """Guard the guard: a truncated reference must not pass silently."""
     stages = {k.split(".")[0] for k in reference}
-    assert stages == {"dd", "zdres", "sdres", "ddidx", "ddcov", "synth"}
+    assert stages == {"dd", "zdres", "sdres", "ddidx", "ddcov", "synth",
+                      "ar"}
     assert reference["dd.epochs"][0] >= 20, "too few double-difference epochs"
     assert len(reference) > 300, f"only {len(reference)} arrays recorded"
 

@@ -68,6 +68,12 @@ class QualityControlMixin:
         # Reset previous editing results
         #
         rcv.edt = np.zeros((ns, self.nav.nf), dtype=int)
+        # Slip flags are per-epoch signals too. Only the rover's were
+        # ever cleared (rtk.update_ambiguities zeroes nav.slip), so a
+        # single base-side LLI/GF slip latched forever and the merge
+        # np.maximum(rover.slip, base.slip) reset that satellite's
+        # ambiguity on every following epoch.
+        rcv.slip[:, :] = 0
 
         # Loop over all satellites
         #
@@ -221,9 +227,9 @@ class QualityControlMixin:
                     # Previously nav.gf for the rover and nav.gf_r for the
                     # base, selected by whether rr was passed. Each receiver
                     # now carries its own table, so there is one name.
-                    gf0 = rcv.gf[sat_i]
+                    gf0 = rcv.gf[sat_i - 1]
                     if gf1 != 0.0:
-                        rcv.gf[sat_i] = gf1
+                        rcv.gf[sat_i - 1] = gf1
                     if gf0 != 0.0 and gf1 != 0.0 and \
                             abs(gf1-gf0) > self.nav.thresslip:
                         # A GF jump is a cycle slip, not a bad range: flag
