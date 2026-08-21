@@ -446,7 +446,7 @@ def mlambda(ahat, Qahat, ncands=2, parmode=1, P0=0.995):
             for k in range(len(zhat)):
                 d_ = np.delete(d, k)
                 L_ = np.delete(np.delete(L, k, 0), k, 1)
-                zhat_ = np.delete(d, k)
+                zhat_ = np.delete(zhat, k)
 
                 zfix_, s = msearch(L_, d_, zhat_, ncands)
                 # zfix, s = estimILS(L_, d_, zhat_, ncands)

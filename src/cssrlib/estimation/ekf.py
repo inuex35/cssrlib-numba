@@ -246,7 +246,13 @@ class FilterMixin:
         return x, P, S
 
     def valpos(self, v, R, thres=4.0):
-        """ post-fit residual test """
+        """Post-fit residual MONITOR — always returns True.
+
+        Deliberate: enabling the rejection was part of the tokyo
+        regression matrix and measured worse, so this logs offending
+        residuals (monlevel > 1) without vetoing the solution. Callers
+        treating the return as a gate get a constant-True gate.
+        """
         nv = len(v)
         fact = thres**2
         for i in range(nv):
@@ -408,10 +414,10 @@ class FilterMixin:
                     self.nav.outc[j, f] = 0
                     if f == 0:
                         self.nav.ns += 1
+            self.nav.smode = 5   # 4: fixed, 5: float
         else:
+            # do not overwrite a valpos reject with float status
             self.nav.smode = 0
-
-        self.nav.smode = 5  # 4: fixed ambiguities, 5: float ambiguities
 
         if self.nav.armode > 0:
             res = self.resolve_ambiguities(sat)

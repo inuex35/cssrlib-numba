@@ -111,42 +111,25 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
             dP[3:6] = self.nav.sig_v0**2
 
         # Tropo delay
-        if self.nav.trop_opt == 1:  # trop is estimated
-            if self.nav.pmode >= 1:  # kinematic
-                dP[6] = self.nav.sig_ztd0**2
-            else:
-                dP[3] = self.nav.sig_ztd0**2
+        lay = self.layout
+        if lay.ntrop:
+            dP[lay.npos] = self.nav.sig_ztd0**2
 
-        # Process noise
-        #
+        # Process noise, addressed through the layout: the hardcoded
+        # 3/4/6/7 offsets silently shifted the iono block when
+        # trop_opt=0 while iono_opt=1 (satellite 1's iono state got
+        # process noise 0), and the ambiguity slice started beyond
+        # q.size (q covers only the first na states — ambiguity process
+        # noise never existed; see nq == na in StateLayout).
         self.nav.q = np.zeros(self.nav.nq)
         self.nav.q[0:3] = self.nav.sig_qp**2
-
-        # Velocity
-        if self.nav.pmode >= 1:  # kinematic
+        if lay.pmode >= 1:  # kinematic
             self.nav.q[3:6] = self.nav.sig_qv**2
-
-        if self.nav.trop_opt == 1:  # trop is estimated
-            # Tropo delay
-            if self.nav.pmode >= 1:  # kinematic
-                self.nav.q[6] = self.nav.sig_qztd**2
-            else:
-                self.nav.q[3] = self.nav.sig_qztd**2
-
-        if self.nav.iono_opt == 1:  # iono is estimated
-            # Iono delay
-            if self.nav.pmode >= 1:  # kinematic
-                self.nav.q[7:7+uGNSS.MAXSAT] = self.nav.sig_qion**2
-            else:
-                self.nav.q[4:4+uGNSS.MAXSAT] = self.nav.sig_qion**2
-
-        # ambiguity
-        if self.nav.pmode >= 1:  # kinematic
-            self.nav.q[7+uGNSS.MAXSAT:7 +
-                       (uGNSS.MAXSAT*self.nav.nf+1)] = self.nav.sig_qb**2
-        else:
-            self.nav.q[4+uGNSS.MAXSAT:4 +
-                       (uGNSS.MAXSAT*self.nav.nf+1)] = self.nav.sig_qb**2
+        if lay.ntrop:
+            self.nav.q[lay.npos] = self.nav.sig_qztd**2
+        if lay.niono:
+            i0 = lay.npos + lay.ntrop
+            self.nav.q[i0:i0 + lay.niono] = self.nav.sig_qion**2
 
         # Logging level
         #
