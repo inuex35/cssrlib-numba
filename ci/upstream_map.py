@@ -177,7 +177,7 @@ def build(upstream):
     return sha, subject, rows, live, dupes, stale
 
 
-def render(sha, subject, rows, live, dupes, stale):
+def render(sha, subject, rows, live, dupes, stale, full=False):
     out = []
     w = out.append
     w("# Where upstream went")
@@ -255,23 +255,34 @@ def render(sha, subject, rows, live, dupes, stale):
             w(f"- `{name}`: " + ", ".join(gone))
     w("")
 
-    w("## Full symbol table")
-    w("")
-    for name in sorted(rows):
-        if name in DELETED:
-            continue
-        w(f"### `{name}`")
+    if full:
+        w("## Full symbol table")
         w("")
-        w("| kind | upstream symbol | now in |")
-        w("| --- | --- | --- |")
-        for kind, sym, verdict, where in rows[name]:
-            if verdict == "moved":
-                cell = f"`{where[0]}`"
-            elif verdict == "ambiguous":
-                cell = "? " + ", ".join(f"`{d}`" for d in where)
-            else:
-                cell = "--"
-            w(f"| {kind} | `{sym}` | {cell} |")
+        for name in sorted(rows):
+            if name in DELETED:
+                continue
+            w(f"### `{name}`")
+            w("")
+            w("| kind | upstream symbol | now in |")
+            w("| --- | --- | --- |")
+            for kind, sym, verdict, where in rows[name]:
+                if verdict == "moved":
+                    cell = f"`{where[0]}`"
+                elif verdict == "ambiguous":
+                    cell = "? " + ", ".join(f"`{d}`" for d in where)
+                else:
+                    cell = "--"
+                w(f"| {kind} | `{sym}` | {cell} |")
+            w("")
+    else:
+        w("## Per-symbol lookup")
+        w("")
+        w("The full upstream-symbol -> current-module table is generated")
+        w("on demand rather than committed:")
+        w("")
+        w("```")
+        w("python ci/upstream_map.py --full")
+        w("```")
         w("")
 
     w("## Defined in more than one module here")
@@ -323,9 +334,12 @@ def main(argv=None):
                     help=f"baseline ref (default {DEFAULT_UPSTREAM})")
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if UPSTREAM_MAP.md is out of date")
+    ap.add_argument("--full", action="store_true",
+                    help="include the per-symbol table (large; for local "
+                         "lookups, not for committing)")
     args = ap.parse_args(argv)
 
-    text = render(*build(args.upstream))
+    text = render(*build(args.upstream), full=args.full)
 
     if args.check:
         current = open(OUTPUT).read() if os.path.exists(OUTPUT) else ""

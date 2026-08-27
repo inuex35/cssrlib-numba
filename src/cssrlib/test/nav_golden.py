@@ -32,7 +32,7 @@ from cssrlib.gnss import Nav, sat2id
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "navdata")
-REFERENCE = os.path.join(DATA, "expected.txt")
+REFERENCE = os.path.join(DATA, "expected.npz")
 BUNDLED = os.path.join(HERE, "..", "data", "SEPT078M.21P")
 
 FIXTURES = ("glonass305.rnx", "sbas305.rnx", "beidou305.rnx", "rinex400.rnx")
@@ -238,8 +238,23 @@ def _write(name, lines):
         fh.write("\n".join(lines) + "\n")
 
 
+def write_reference():
+    """Store the fingerprint lines compressed, not as 9,000 lines of text.
+
+    The content is identical to the old expected.txt -- the test still
+    diffs line by line in memory and names the fields that moved -- but
+    the repository carries one small binary instead, the same trade the
+    pipeline golden (pipeline.npz) already makes.
+    """
+    lines = np.array(build().split("\n"))
+    np.savez_compressed(REFERENCE[:-4], lines=lines)
+
+
+def read_reference():
+    return [str(x) for x in np.load(REFERENCE, allow_pickle=False)["lines"]]
+
+
 if __name__ == "__main__":
     write_fixtures()
-    with open(REFERENCE, "w") as fh:
-        fh.write(build())
+    write_reference()
     print(f"wrote {len(FIXTURES)} fixtures and {REFERENCE}")

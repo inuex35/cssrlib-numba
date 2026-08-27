@@ -18,7 +18,8 @@ import os
 
 import pytest
 
-from cssrlib.test.nav_golden import REFERENCE, build, fingerprint, DATA, FIXTURES
+from cssrlib.test.nav_golden import (REFERENCE, build, fingerprint,
+                                     read_reference, DATA, FIXTURES)
 
 REGEN = "python -m cssrlib.test.nav_golden"
 
@@ -27,7 +28,7 @@ REGEN = "python -m cssrlib.test.nav_golden"
 def reference():
     if not os.path.exists(REFERENCE):
         pytest.fail(f"{REFERENCE} is missing; generate it with {REGEN}")
-    return open(REFERENCE).read().split("\n")
+    return read_reference()
 
 
 def test_decoding_matches_the_reference(reference):
