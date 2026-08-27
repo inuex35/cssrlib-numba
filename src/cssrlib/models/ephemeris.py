@@ -107,13 +107,20 @@ def geph2rel(rs, vs):
 def eccentricAnomaly(M, e):
     """
     Compute eccentric anomaly based on mean anomaly and eccentricity
+
+    The iteration budget and tolerance are MAX_ITER_KEPLER / RTOL_KEPLER.
+    They were declared above and then not used: the loop ran 10 iterations
+    to 1e-12 instead. At broadcast GNSS eccentricities (e < 0.02) the two
+    agree to 5e-7 m of orbit radius, but the shorter budget stops short of
+    convergence from about e = 0.05 -- 19 km of position error at e = 0.6,
+    returned without complaint.
     """
     E = M
-    for _ in range(10):
+    for _ in range(MAX_ITER_KEPLER):
         Eold = E
         sE = np.sin(E)
         E = M+e*sE
-        if abs(Eold-E) < 1e-12:
+        if abs(Eold-E) < RTOL_KEPLER:
             break
 
     return E, sE
