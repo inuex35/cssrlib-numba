@@ -105,18 +105,6 @@ def broadcast_orbit(
     q = np.array((-ci * sOmg, ci * cOmg, si), dtype=np.float64)
 
     rs = xo0 * p + xo1 * q
-    if is_bds_geo:
-        so = np.sin(omge * dt)
-        co = np.cos(omge * dt)
-        Mo = np.array(
-            [
-                (co, so * COS_5, so * SIN_5),
-                (-so, co * COS_5, co * SIN_5),
-                (0.0, -SIN_5, COS_5),
-            ],
-            dtype=np.float64,
-        )
-        rs = Mo @ rs
 
     dts = af0 + af1 * dtc + af2 * dtc * dtc \
         - 2.0 * sqrt_mu_A * ecc * sE / (CLIGHT * CLIGHT)
@@ -136,11 +124,37 @@ def broadcast_orbit(
         xod1 = rd * sin_u + (r * ud) * cos_u
 
         incd = idot + cic * h2d0 + cis * h2d1
-        omegd = OMGd - omge
+        # GEO: Omg above has no -omge*dt term, so its rate is OMGd
+        # alone; the Earth rotation enters through Mo / dMo below.
+        omegd = OMGd if is_bds_geo else OMGd - omge
         pd = np.array((-p[1], p[0], 0.0), dtype=np.float64) * omegd
         qd = (np.array((-q[1], q[0], 0.0), dtype=np.float64) * omegd
               + np.array((si * sOmg, -si * cOmg, ci), dtype=np.float64) * incd)
         vs = pd * xo0 + qd * xo1 + p * xod0 + q * xod1
+
+    if is_bds_geo:
+        so = np.sin(omge * dt)
+        co = np.cos(omge * dt)
+        Mo = np.array(
+            [
+                (co, so * COS_5, so * SIN_5),
+                (-so, co * COS_5, co * SIN_5),
+                (0.0, -SIN_5, COS_5),
+            ],
+            dtype=np.float64,
+        )
+        if compute_vel:
+            # The frame rotates with the Earth: vs needs Mo and dMo/dt.
+            dMo = omge * np.array(
+                [
+                    (-so, co * COS_5, co * SIN_5),
+                    (-co, -so * COS_5, -so * SIN_5),
+                    (0.0, 0.0, 0.0),
+                ],
+                dtype=np.float64,
+            )
+            vs = Mo @ vs + dMo @ rs
+        rs = Mo @ rs
 
     return rs, vs, dts
 

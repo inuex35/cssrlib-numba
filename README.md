@@ -76,16 +76,8 @@ python ci/upstream_map.py --check    # what CI runs
 Testing
 -------
 
-Run orbit plot sample.
-
 ```
-python test_eph.py
-```
-
-Run RTK sample.
-
-```
- python test_rtk.py
+pytest src/cssrlib/test
 ```
 
 Other samples with dataset are also available in a separate repository [`cssrlib-data`](https://github.com/hirokawa/cssrlib-data) including:

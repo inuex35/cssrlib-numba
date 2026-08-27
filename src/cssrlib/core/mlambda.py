@@ -427,29 +427,8 @@ def mlambda(ahat, Qahat, ncands=2, parmode=1, P0=0.995):
     elif parmode == 2:  # PAR
         zpar, s, Qzpar, Zpar, Ps, nfix, zfix = parsearch(zhat, Qzhat, Z, L, d,
                                                          Ps, P0, ncands)
-    elif parmode == 3:
-
-        # zfix, s = estimILS(L, d, zhat, ncands)
-        zfix, s = msearch(L, d, zhat, ncands)
-        nfix = len(zhat)
-
-        thresar = 2.0
-        ratio = s[1]/s[0]
-
-        if ratio < thresar:
-
-            for k in range(len(zhat)):
-                d_ = np.delete(d, k)
-                L_ = np.delete(np.delete(L, k, 0), k, 1)
-                zhat_ = np.delete(zhat, k)
-
-                zfix_, s = msearch(L_, d_, zhat_, ncands)
-                # zfix, s = estimILS(L_, d_, zhat_, ncands)
-                ratio = s[1]/s[0]
-                if ratio >= thresar:
-                    break
-
-        nfix = len(zhat)-1
+    else:
+        raise ValueError(f"unsupported parmode {parmode}")
 
     afix_ = iZt@zfix
     return afix_, s, nfix, Ps

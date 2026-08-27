@@ -311,6 +311,8 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
             # Substitute signal if not available
             #
             sig = substSigTx(ant, sig0_)
+            if sig not in ant.off:  # no substitute exists (e.g. E6, B1C)
+                return None
 
             # Satellite PCO in local antenna frame
             #
@@ -324,6 +326,10 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
         # Substitute signal if not available
         #
         sig = substSigTx(ant, sig_)
+        if sig not in ant.off or sig not in ant.var:
+            # No model for this signal; the callers test `is None` on
+            # the whole array (a per-element None would land as nan).
+            return None
 
         # Satellite PCO in local antenna frame
         #
@@ -335,12 +341,9 @@ def antModelTx(nav, e, sigs, sat, time, rs, sig0=None):
 
         # Interpolate PCV and map PCO on line-of-sight vector
         #
-        if sig not in ant.off or sig not in ant.var:
-            dant[i] = None
-        else:
-            pcv = np.interp(za, za_t, ant.var[sig])
-            pco = -np.dot(pco_v, -e)
-            dant[i] = (pco+pcv)*1e-3
+        pcv = np.interp(za, za_t, ant.var[sig])
+        pco = -np.dot(pco_v, -e)
+        dant[i] = (pco+pcv)*1e-3
 
     return dant
 

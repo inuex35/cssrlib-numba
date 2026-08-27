@@ -7,11 +7,8 @@ include src/cssrlib/test/golden/*.npz
 include src/cssrlib/test/navdata/*.rnx
 include src/cssrlib/test/navdata/*.npz
 
-graft docs
-prune docs/build
-
 prune tests
-prune example
+prune examples
 prune .github
 
 global-exclude *.py[cod]

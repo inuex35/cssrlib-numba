@@ -208,7 +208,12 @@ def _sdres_build_plan(obs, sat, el, y, nav):
                     continue
 
                 if sys == uGNSS.GLO:
-                    freq = sig.frequency(nav.glo_ch[sat_id])
+                    # .get: a GLONASS satellite can pass qcedit with its
+                    # FCN still unknown (no ephemeris decoded yet).
+                    ch = nav.glo_ch.get(sat_id)
+                    if ch is None:
+                        continue
+                    freq = sig.frequency(ch)
                 else:
                     freq = sig.frequency()
                 mu = -(freq0/freq)**2 if is_phase else +(freq0/freq)**2
@@ -216,8 +221,11 @@ def _sdres_build_plan(obs, sat, el, y, nav):
                 if is_phase:
                     ref_sat_id = int(sat_array[ref_pos])
                     if sys == uGNSS.GLO:
-                        lam_ref = sig.wavelength(nav.glo_ch[ref_sat_id])
-                        lam_sat = sig.wavelength(nav.glo_ch[sat_id])
+                        ch_ref = nav.glo_ch.get(ref_sat_id)
+                        if ch_ref is None:
+                            continue
+                        lam_ref = sig.wavelength(ch_ref)
+                        lam_sat = sig.wavelength(ch)
                     else:
                         lam_ref = sig.wavelength()
                         lam_sat = lam_ref
@@ -359,10 +367,11 @@ class ObservationModelMixin:
             # Wavelength
             #
             if sys == uGNSS.GLO:
-                lam = np.array([s.wavelength(self.nav.glo_ch[sat])
-                                for s in sigsCP])
-                frq = np.array([s.frequency(self.nav.glo_ch[sat])
-                               for s in sigsCP])
+                ch = self.nav.glo_ch.get(sat)
+                if ch is None:  # FCN unknown: no ephemeris decoded yet
+                    continue
+                lam = np.array([s.wavelength(ch) for s in sigsCP])
+                frq = np.array([s.frequency(ch) for s in sigsCP])
             else:
                 lam = np.array([s.wavelength() for s in sigsCP])
                 frq = np.array([s.frequency() for s in sigsCP])

@@ -25,30 +25,6 @@ def geodist(rs, rr):
     return _geom_fast.geodist(_ensure_vec(rs), _ensure_vec(rr))
 
 
-def kfupdate(x, P, H, v, R):
-    """ Kalman filter measurement update """
-    # select subset of states and covariance
-    ix = []
-    for i in range(len(x)):
-        if P[i, i] > 0.0:
-            ix.append(i)
-    x_ = x[ix]
-    P_ = P[ix, :][:, ix]
-    # measurement update
-    H_ = H[:, ix]
-    PHt = P_@H_.T
-    S = H_@PHt+R
-    K = PHt@np.linalg.inv(S)
-    x_ += K@v
-    P_ -= K@H_@P_
-    # restore states and covariance
-    x[ix] = x_
-    sP = P[ix, :]
-    sP[:, ix] = P_
-    P[ix, :] = sP
-    return x, P, S
-
-
 def dops_h(H):
     """ calculate DOP from H """
     Qinv = np.linalg.inv(np.dot(H.T, H))
@@ -99,8 +75,7 @@ def ecef2pos(r):
 def pos2ecef(pos, isdeg: bool = False):
     """ LLH (rad/deg) to ECEF position conversion  """
     if isdeg:
-        pos[0] *= np.pi/180.0
-        pos[1] *= np.pi/180.0
+        pos = [pos[0]*np.pi/180.0, pos[1]*np.pi/180.0, pos[2]]
     s_p = sin(pos[0])
     c_p = cos(pos[0])
     s_l = sin(pos[1])

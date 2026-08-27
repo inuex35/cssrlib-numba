@@ -64,6 +64,13 @@ jobs:
       - name: Run tests
         run: pip install pytest && pytest src/cssrlib/test -q
 
+      # The same suite, from the installed distribution and outside the
+      # repository -- catches data files missing from the package.
+      - name: Run tests from the installed distribution
+        run: |
+          cd "$RUNNER_TEMP"
+          pytest "$(python -c 'import cssrlib,os;print(os.path.dirname(cssrlib.__file__))')/test" -q
+
   upstream-map:
     name: upstream map is current
     runs-on: ubuntu-latest

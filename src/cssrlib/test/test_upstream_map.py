@@ -23,6 +23,12 @@ ROOT = os.path.dirname(os.path.dirname(SRC))
 MAP = os.path.join(ROOT, "UPSTREAM_MAP.md")
 REGEN = "python ci/upstream_map.py"
 
+if not os.path.exists(MAP):
+    # Installed distribution: the map lives in the repository, not the
+    # package. Nothing to check here.
+    pytest.skip("UPSTREAM_MAP.md is not part of the installed package",
+                allow_module_level=True)
+
 
 def library_modules():
     """Every module the map should account for, as ``layer/name.py``."""

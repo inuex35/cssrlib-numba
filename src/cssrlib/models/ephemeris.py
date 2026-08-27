@@ -391,7 +391,8 @@ def satposs(obs, nav, cs=None, orb=None):
                 nav.dorb[sat] = dorb_
                 nav.dclk[sat] = dclk
 
-            elif nav.smode == 1 and nav.nf == 1:  # stand-alone positioning
+            elif nav.smode == 1 and nav.nf == 1 and sys != uGNSS.GLO:
+                # stand-alone positioning (GLONASS carries no eph/tgd here)
                 dts[i] -= eph.tgd
 
             nsat += 1

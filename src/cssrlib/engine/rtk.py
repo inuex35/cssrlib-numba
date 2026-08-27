@@ -151,6 +151,11 @@ class rtkpos(gnssobs):
         obs_.sat = obs.sat[iu]
         obs_.L = self._build_frequency_diff(Lu[iu, :], Lr[ir, :])
         obs_.P = self._build_frequency_diff(Pu[iu, :], Pr[ir, :])
+        # Rover-side columns follow the common-satellite indexing too.
+        for name in ('S', 'D', 'lli'):
+            col = getattr(obs, name, None)
+            if isinstance(col, np.ndarray) and col.ndim == 2                     and col.shape[0] == len(obs.sat):
+                setattr(obs_, name, col[iu, :])
         return iu, obs_
 
     def _common_indices(self, obs, obsb, sat_ed):
