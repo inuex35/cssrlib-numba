@@ -147,7 +147,7 @@ class QualityControlMixin:
                 # LLI=1 flags the band for the ambiguity reset in
                 # udstate() but keeps the measurement (RTKLIB-style);
                 # the validity checks below still apply to it.
-                if obs.lli[j, f] == 1:
+                if obs.lli[j, f] & 1:  # b0 = cycle slip
                     rcv.slip[i, f] = 1
                     if self.nav.monlevel > 0:
                         self.nav.fout.write("{}  {} - slip {:4s} - LLI\n"
@@ -238,10 +238,8 @@ class QualityControlMixin:
             # mixed-nf system is judged on the bands it carries); with
             # sat_band_plan it narrows further to the bands this
             # satellite has ever produced. Within that set the gate is
-            # strict: one edited band drops the satellite. (Per-band
-            # admission is known-harmful here -- a degraded band is a
-            # multipath canary for its neighbors.) The per-band edt
-            # verdicts above still feed the per-band consumers.
+            # strict: one edited band drops the satellite. The per-band
+            # edt verdicts above still feed the per-band consumers.
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
             if nf_sys <= 0:
                 rcv.edt[i, :] = 1

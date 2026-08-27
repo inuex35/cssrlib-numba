@@ -139,8 +139,8 @@ class rSigRnx():
         if len(s) == 3:
             if sys == uGNSS.GPS:
                 if (s[1] == '1' and s[2] not in 'CSLXPWYM') or \
-                   (s[2] == '2' and s[2] not in 'CDSLXPWYMN') or \
-                   (s[2] == '5' and s[2] not in 'IQX'):
+                   (s[1] == '2' and s[2] not in 'CDSLXPWYMN') or \
+                   (s[1] == '5' and s[2] not in 'IQX'):
                     raise ValueError
             elif sys == uGNSS.GLO:
                 if (s[1] == '1' and s[2] not in 'CPX') or \

@@ -76,7 +76,7 @@ class Eph():
     top = 0
     crs = 0.0
     crc = 0.0
-    cus = 0.0
+    cuc = 0.0
     cus = 0.0
     cis = 0.0
     cic = 0.0
@@ -422,7 +422,7 @@ _NAV_FIELDS = {
             "maxtdiff", "rtklib_mode", "arfilter",
             "minfixsats", "sat_band_plan"),
     "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
-            "excsat", "prev_ratio1", "prev_ratio2",
+            "band_seen", "excsat", "prev_ratio1", "prev_ratio2",
             "el", "phw", "sat", "t", "tt", "smode", "nsat", "time_p"),
     "flt": ("x", "P", "xa", "Pa", "y", "na", "nq", "nx", "ntrop", "niono"),
 }

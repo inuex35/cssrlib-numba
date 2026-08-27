@@ -100,8 +100,7 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
 
         # Diagonal elements of covariance matrix
         #
-        dP = np.diag(self.nav.P)
-        dP.flags['WRITEABLE'] = True
+        dP = np.einsum('ii->i', self.nav.P)  # writable diagonal view
 
         dP[0:3] = self.nav.sig_p0**2
         # Velocity
@@ -133,6 +132,18 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
             self.nav.monlevel = 0
         else:
             self.nav.fout = open(logfile, 'w')
+
+    def close(self):
+        """Close the monitor log file, if one was opened."""
+        if self.nav.fout is not None:
+            self.nav.fout.close()
+            self.nav.fout = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _apply_config(self, cfg):
         """Merge a configuration into ``nav``, letting the caller win.
