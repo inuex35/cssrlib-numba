@@ -250,22 +250,32 @@ class QualityControlMixin:
             # setup — is judged on those bands only, so its satellites are
             # not punished for a slot that was never selected).
             #
-            # Within the selected bands the editing is per band, as the
-            # per-band tests above already record it: a satellite survives
-            # while it has one usable band, and the bands that failed stay
-            # marked so consumers skip them individually. This gate used to
-            # be np.any -- one bad band condemned the satellite, which made
-            # every edt row uniformly 0 or 1 and the per-band tests
-            # decorative. On the bundled 25 epochs that discarded a 36 dB-Hz
-            # G01 L1 in 20 satellite-epochs because G01 L2 sat at 14 dB-Hz.
+            # Within the selected bands the strict gate applies: any edited
+            # band drops the whole satellite. This was relaxed to per-band
+            # admission once (np.all here), on the argument that discarding
+            # a 36 dB-Hz L1 because L2 sat at 14 dB-Hz wastes a good band
+            # -- and the relaxation was measured twice, in different years,
+            # to be wrong. In 2026-07 accepting L5-less GPS and B1I-only
+            # BeiDou-2 measurably poisoned the urban float solution, and
+            # the criterion "judge over the bands the system selected" was
+            # the resolution. In 2026-08 the relaxed gate collapsed the
+            # tokyo run2 tightly-coupled pipeline outright: 284 fixes in
+            # 300 epochs became 0, float RMS 0.13 m became 5.2 m, and
+            # restoring this gate alone -- with every other change of that
+            # commit kept -- restored the baseline print-identically.
             #
-            # The opposite risk is real and is why the strict gate existed:
-            # a degraded band is a tracking / multipath canary, and admitting
-            # L5-less GPS or B1I-only BeiDou-2 can poison an urban float
-            # solution. That trade is now the caller's to make through
-            # cnr_min / elmin rather than a hidden all-or-nothing rule.
+            # A degraded band on a satellite whose system provides it is a
+            # tracking / multipath canary; the band that still looks clean
+            # is standing next to one that does not.
+            #
+            # The per-band verdicts recorded above still matter: they are
+            # what the DDMeasurements edt / edtb masks report, and the
+            # per-band consumers (udstate, update_ambiguities, zdres,
+            # _sdres_build_plan) read them per band, which under this gate
+            # is equivalent for satellites that survive and exact for the
+            # uncarried slots of mixed-nf systems.
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
-            if nf_sys <= 0 or np.all(rcv.edt[i, :nf_sys] > 0):
+            if nf_sys <= 0 or np.any(rcv.edt[i, :nf_sys] > 0):
                 rcv.edt[i, :] = 1
                 continue
 

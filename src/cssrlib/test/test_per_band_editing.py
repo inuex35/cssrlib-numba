@@ -1,23 +1,29 @@
-"""Editing is per band, and it does not write on the caller's observations.
+"""Editing is recorded per band, admitted per satellite, and never written
+back onto the caller's observations.
 
-qcedit records a verdict per band -- missing PR, missing CP, low C/N0 -- and
-then used to collapse it: ``if np.any(edt[i, :nf_sys]): edt[i, :] = 1`` and
-drop the satellite. Every edt row was therefore uniformly 0 or 1 and the
-per-band tests were decorative. On the bundled dataset that discarded G01's
-36 dB-Hz L1 in 20 satellite-epochs out of 250, because G01's L2 sits at
-14 dB-Hz.
+qcedit's per-band tests -- missing PR, missing CP, low C/N0 -- record a
+verdict per band, and the strict gate then drops any satellite with an
+edited band among the ones its system selected. The gate was relaxed to
+per-band admission once and measured to be wrong twice: in 2026-07
+accepting L5-less GPS / B1I-only BeiDou-2 poisoned the urban float
+solution, and in 2026-08 the relaxed gate collapsed the tokyo run2
+tightly-coupled pipeline (284 fixes in 300 epochs to 0; float RMS 0.13 m to
+5.2 m), with the gate's restoration alone recovering the baseline
+print-identically. These tests pin the strict policy on the bundled
+split-band satellite so the relaxation cannot come back quietly.
 
-The mask is also no longer applied by writing zeros into ``obs`` / ``obsb``.
-Those belong to the caller, and ``sync_obs_hold`` hands the same base record
-back for several rover epochs by design.
+What did survive from that episode: the masks are applied to local copies
+rather than written into ``obs`` / ``obsb`` (``sync_obs_hold`` reuses one
+base record across rover epochs by design), and ``DDMeasurements`` carries
+``edt`` / ``edtb`` so a consumer reading the raw arrays can see the same
+verdicts ``obs_sd`` already has applied.
 """
 
 import copy
 
 import numpy as np
-import pytest
 
-from cssrlib.gnss import sat2id, sat2prn, uTYP
+from cssrlib.gnss import sat2id
 from cssrlib.models.ephemeris import satposs
 from cssrlib.test.golden_harness import setup
 
@@ -40,38 +46,24 @@ def test_the_dataset_still_has_a_split_band_satellite():
     assert obs.S[i, 0] >= rtk.nav.cnr_min, "L1 should be healthy"
     assert obs.S[i, 1] < rtk.nav.cnr_min, (
         f"{SPLIT_BAND_SAT} L2 is no longer below cnr_min; this file no "
-        f"longer exercises per-band editing")
+        f"longer exercises the split-band gate")
 
 
-def test_qcedit_keeps_the_satellite_for_its_good_band():
+def test_one_bad_selected_band_drops_the_satellite():
+    """The strict gate: a split-band satellite does not survive."""
     _, _, rtk, obs, _ = first_epoch()
     rs, vs, dts, svh, _ = satposs(obs, rtk.nav)
 
     sat_ed = rtk.qcedit(obs, rs, dts, svh)
 
     sat_no = next(int(s) for s in obs.sat if sat2id(s) == SPLIT_BAND_SAT)
-    assert sat_no in sat_ed, (
-        f"{SPLIT_BAND_SAT} was dropped although its L1 is usable -- the "
-        f"all-or-nothing gate is back")
+    assert sat_no not in sat_ed, (
+        f"{SPLIT_BAND_SAT} survived with a band below cnr_min -- the "
+        f"per-band admission relaxation is back, which collapsed the "
+        f"tokyo tightly-coupled pipeline when it was measured")
 
-    row = rtk.nav.rcv.edt[sat_no - 1]
-    assert row[0] == 0, "the good band was edited out with the bad one"
-    assert row[1] != 0, "the band below cnr_min was not edited"
-
-
-def test_some_edt_row_is_genuinely_mixed():
-    """The property the collapse destroyed: rows need not be uniform."""
-    _, _, rtk, obs, _ = first_epoch()
-    rs, vs, dts, svh, _ = satposs(obs, rtk.nav)
-    rtk.qcedit(obs, rs, dts, svh)
-
-    rows = rtk.nav.rcv.edt[np.asarray(obs.sat) - 1, :rtk.nav.nf]
-    mixed = [(sat2id(obs.sat[k]), rows[k].tolist())
-             for k in range(len(obs.sat))
-             if 0 < int(rows[k].sum()) < rows.shape[1]]
-
-    assert mixed, (
-        "every edt row is uniform; per-band editing is not reaching the mask")
+    # And the whole row is marked, so every per-band consumer skips it.
+    assert np.all(rtk.nav.rcv.edt[sat_no - 1] > 0)
 
 
 def test_single_differences_does_not_touch_the_caller_observations():
@@ -110,8 +102,13 @@ def test_a_held_base_record_survives_being_reused():
         f"satellite count wandered across reuses of one base record: {counts}")
 
 
-def test_dd_exposes_the_masks_that_obs_sd_already_applied():
-    """A caller reading raw obs/obsb must be able to reproduce the editing."""
+def test_dd_exposes_masks_consistent_with_obs_sd():
+    """edt / edtb describe exactly the bands obs_sd carries as zero.
+
+    Under the strict gate a surviving satellite has no edited selected
+    band, so for the bundled file the masks are clean on the carried bands
+    -- and the split-band satellite is simply absent.
+    """
     dec, decb, rtk = setup()
     obs = dec.decode_obs()
     obsb = decb.decode_obs()
@@ -119,9 +116,10 @@ def test_dd_exposes_the_masks_that_obs_sd_already_applied():
     dd = rtk.prepare_double_difference_measurements(obs, obsb)
     assert dd is not None
 
-    sat, iu, ir = dd['sat'], dd['iu'], dd['ir']
+    sat = dd['sat']
     assert dd['edt'].shape == (len(sat), rtk.nav.nf)
     assert dd['edtb'].shape == (len(sat), rtk.nav.nf)
+    assert SPLIT_BAND_SAT not in {sat2id(s) for s in sat}
 
     masked = dd['edt'] | dd['edtb']
     nf = min(rtk.nav.nf, dd['obs_sd'].L.shape[1])
@@ -131,8 +129,3 @@ def test_dd_exposes_the_masks_that_obs_sd_already_applied():
                 assert dd['obs_sd'].L[k, f] == 0.0, (
                     f"{sat2id(sat[k])} band {f} is masked but survived in "
                     f"obs_sd")
-
-    # And the split-band satellite is present with exactly one band.
-    row = next(k for k in range(len(sat))
-               if sat2id(sat[k]) == SPLIT_BAND_SAT)
-    assert not masked[row, 0] and masked[row, 1]
