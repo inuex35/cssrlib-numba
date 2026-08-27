@@ -32,7 +32,14 @@ class QualityControlMixin:
             if self.nav.pmode > 0:
                 rr_ += self.nav.x[3:6]*tt
         else:
-            rr_ = rr
+            # A copy, and an array: the tide correction below is applied with
+            # `rr_ += disp`, which writes through to whatever the caller
+            # passed. single_differences passes nav.rb, so with tidecorr on
+            # and rb held as an ndarray the base coordinate accumulated the
+            # tidal displacement every epoch -- 0.13 m after three, and
+            # growing. Held as a list it happened to escape, because numpy
+            # rebinds rather than extending.
+            rr_ = np.array(rr, dtype=float)
 
         # Solid Earth tide corrections
         #
