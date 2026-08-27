@@ -8,12 +8,11 @@ import numpy as np
 from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
     time2gpst, timeget, time2gst, time2bdt, gst2time, bdt2time, epoch2time
+from cssrlib.core.orbit import (broadcast_orbit, MAX_ITER_KEPLER,
+                                RTOL_KEPLER)
 from cssrlib.models.glonass import propagate_glonass
 from datetime import datetime
 import xml.etree.ElementTree as et
-
-MAX_ITER_KEPLER = 30
-RTOL_KEPLER = 1e-13
 
 MAXDTOE_t = {uGNSS.GPS: 7201.0, uGNSS.GAL: 14400.0, uGNSS.QZS: 7201.0,
              uGNSS.BDS: 7201.0, uGNSS.IRN: 7201.0, uGNSS.GLO: 1800.0,
@@ -140,86 +139,40 @@ def sys2MuOmega(sys):
 
 
 def eph2pos(t: gtime_t, eph: Eph, flg_v=False):
-    """ calculate satellite position based on ephemeris """
+    """ calculate satellite position based on ephemeris
+
+    The Keplerian propagation is :func:`cssrlib.core.orbit.broadcast_orbit`,
+    which Numba compiles; what stays here is unpacking ``Eph`` into the
+    scalars it takes. That kernel existed for a long time with no caller
+    while this function did the arithmetic in NumPy, so the two drifted: the
+    kernel had lost the ``Adot`` and ``delnd`` velocity terms and derived the
+    harmonic rate from the wrong basis. There is now one copy.
+
+    ``M = M0 + (n0 + deln) dt + delnd dt^2 / 2``, so ``dM/dt = n + delnd
+    dt / 2``, and the semi-major axis drifts at ``Adot``. Both terms exist
+    only for CNAV ephemerides (``eph.mode > 0``).
+    """
     sys, prn = sat2prn(eph.sat)
     mu, omge = sys2MuOmega(sys)
     dt = dtadjust(t, eph.toe)
-    n0 = np.sqrt(mu/eph.A**3)
-    dna = eph.deln
-    Ak = eph.A
+
+    dna, Ak, nd, Akd = eph.deln, eph.A, 0.0, 0.0
     if eph.mode > 0:
         dna += 0.5*dt*eph.delnd
         Ak += dt*eph.Adot
-    n = n0+dna
-    M = eph.M0+n*dt
-    E, sE = eccentricAnomaly(M, eph.e)
-    cE = np.cos(E)
-    dtc = dtadjust(t, eph.toc)
-    dtrel = -2.0*np.sqrt(mu*eph.A)*eph.e*sE/rCST.CLIGHT**2
-    dts = eph.af0+eph.af1*dtc+eph.af2*dtc**2 + dtrel
+        nd = 0.5*eph.delnd*dt
+        Akd = eph.Adot
+    n = np.sqrt(mu/eph.A**3)+dna
 
-    nus = np.sqrt(1.0-eph.e**2)*sE
-    nuc = cE-eph.e
-    nue = 1.0-eph.e*cE
+    is_geo = 1 if (sys == uGNSS.BDS and (prn <= 5 or prn >= 59)) else 0
 
-    nu = np.arctan2(nus, nuc)
-    phi = nu+eph.omg
-    h2 = np.array([np.cos(2.0*phi), np.sin(2.0*phi)])
-    u = phi+np.array([eph.cuc, eph.cus])@h2
-    r = Ak*nue+np.array([eph.crc, eph.crs])@h2
-    h = np.array([np.cos(u), np.sin(u)])
-    xo = r*h
+    rs, vs, dts = broadcast_orbit(
+        dt, dtadjust(t, eph.toc), n, nd, Ak, Akd, eph.M0+n*dt, eph.e,
+        eph.omg, eph.cuc, eph.cus, eph.crc, eph.crs, eph.cic, eph.cis,
+        eph.i0, eph.idot, eph.OMG0, eph.OMGd, omge, eph.toes, is_geo,
+        np.sqrt(mu*eph.A), eph.af0, eph.af1, eph.af2, 1 if flg_v else 0)
 
-    inc = eph.i0+eph.idot*dt+np.array([eph.cic, eph.cis])@h2
-    si = np.sin(inc)
-    ci = np.cos(inc)
-
-    if sys == uGNSS.BDS and (prn <= 5 or prn >= 59):  # BDS GEO
-        Omg = eph.OMG0+eph.OMGd*dt-omge*eph.toes
-        sOmg = np.sin(Omg)
-        cOmg = np.cos(Omg)
-        p = np.array([cOmg, sOmg, 0])
-        q = np.array([-ci*sOmg, ci*cOmg, si])
-        rg = xo@np.array([p, q])
-        so = np.sin(omge*dt)
-        co = np.cos(omge*dt)
-        Mo = np.array([[co, so*rCST.COS_5, so*rCST.SIN_5],
-                       [-so, co*rCST.COS_5, co*rCST.SIN_5],
-                       [0.0,   -rCST.SIN_5,    rCST.COS_5]])
-        rs = Mo@rg
-    else:
-        Omg = eph.OMG0+eph.OMGd*dt-omge*(eph.toes+dt)
-        sOmg = np.sin(Omg)
-        cOmg = np.cos(Omg)
-        p = np.array([cOmg, sOmg, 0])
-        q = np.array([-ci*sOmg, ci*cOmg, si])
-        rs = xo@np.array([p, q])
-
-    if flg_v:  # satellite velocity
-        qq = np.array([si*sOmg, -si*cOmg, ci])
-        # M = M0+(n0+deln)*dt+0.5*delnd*dt^2, so dM/dt = n+0.5*delnd*dt, and
-        # the semi-major axis drifts at Adot, both only for eph.mode > 0.
-        nd = 0.5*eph.delnd*dt if eph.mode > 0 else 0.0
-        Akd = eph.Adot if eph.mode > 0 else 0.0
-        Ed = (n+nd)/nue
-        nud = np.sqrt(1.0-eph.e**2)/nue*Ed
-        # d/dt [cos(2*phi), sin(2*phi)] rotates the h2 basis, not the h basis
-        h2d = 2.0*nud*np.array([-h2[1], h2[0]])
-        ud = nud+np.array([eph.cuc, eph.cus])@h2d
-        rd = Akd*nue+Ak*eph.e*sE*Ed+np.array([eph.crc, eph.crs])@h2d
-
-        hd = np.array([-h[1], h[0]])
-        xod = rd*h+(r*ud)*hd
-        incd = eph.idot+np.array([eph.cic, eph.cis])@h2d
-        omegd = eph.OMGd-omge
-
-        pd = np.array([-p[1], p[0], 0])*omegd
-        qd = np.array([-q[1], q[0], 0])*omegd+qq*incd
-
-        vs = xo@np.array([pd, qd])+xod@np.array([p, q])
-        return rs, vs, dts
-
-    return rs, dts
+    return (rs, vs, dts) if flg_v else (rs, dts)
 
 
 def eph2clk(time, eph):
