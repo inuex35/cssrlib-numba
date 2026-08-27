@@ -51,18 +51,18 @@ destination first.
 | upstream module | symbols | destinations |
 | --- | --- | --- |
 | `cssr_bds.py` | 17 | `ssr/bds.py` (17) |
-| `cssr_has.py` | 12 | `ssr/has.py` (12) |
+| `cssr_has.py` | 12 | `ssr/has.py` (11) |
 | `cssr_mdc.py` | 14 | `ssr/mdc.py` (14) |
-| `cssr_pvs.py` | 8 | `ssr/pvs.py` (8) |
-| `cssrlib.py` | 60 | `ssr/base.py` (55), `core/ssr_types.py` (2) |
-| `ephemeris.py` | 18 | `models/ephemeris.py` (16) |
-| `gnss.py` | 101 | `domain/timescale.py` (25), `domain/coords.py` (17), `domain/structs.py` (15), `domain/signal.py` (13), `domain/sat.py` (7), `domain/enums.py` (6) |
+| `cssr_pvs.py` | 8 | `ssr/pvs.py` (7) |
+| `cssrlib.py` | 60 | `ssr/base.py` (52), `core/ssr_types.py` (2) |
+| `ephemeris.py` | 18 | `models/ephemeris.py` (8) |
+| `gnss.py` | 101 | `domain/timescale.py` (22), `domain/structs.py` (15), `domain/coords.py` (15), `domain/signal.py` (13), `domain/enums.py` (6), `domain/sat.py` (6) |
 | `mlambda.py` | 7 | `core/mlambda.py` (7) |
-| `peph.py` | 45 | `models/precise.py` (13), `models/antenna.py` (12), `models/bias.py` (9), `models/frames.py` (3) |
+| `peph.py` | 45 | `models/antenna.py` (11), `models/precise.py` (9), `models/bias.py` (7), `models/frames.py` (3) |
 | `ppp.py` | 14 | `models/tides.py` (6) |
 | `ppprtk.py` | 2 | `engine/ppprtk.py` (2) |
-| `pppssr.py` | 22 | `estimation/residuals.py` (5), `estimation/ambiguity.py` (5), `estimation/ekf.py` (4), `engine/gnssobs.py` (3), `estimation/qc.py` (1) |
-| `rinex.py` | 26 | `fileio/writer.py` (9), `fileio/reader.py` (8), `fileio/clk.py` (3), `fileio/obs.py` (3), `fileio/nav.py` (2), `fileio/sync.py` (1) |
+| `pppssr.py` | 22 | `estimation/residuals.py` (5), `estimation/ekf.py` (4), `estimation/ambiguity.py` (4), `engine/gnssobs.py` (3), `estimation/qc.py` (1) |
+| `rinex.py` | 26 | `fileio/reader.py` (7), `fileio/writer.py` (5), `fileio/obs.py` (3), `fileio/clk.py` (2), `fileio/nav.py` (2), `fileio/sync.py` (1) |
 | `rtk.py` | 3 | `engine/rtk.py` (2) |
 
 ## Symbols with no counterpart
@@ -71,10 +71,14 @@ In a surviving upstream module, but not found here. Either dropped
 with the feature, or renamed -- name matching cannot tell the two
 apart, so check before concluding a port is unnecessary.
 
-- `cssrlib.py`: method `cssr.set_time`, method `cssr.merge_cssr`, method `cssre.quality2qi`
-- `ephemeris.py`: function `deq`, function `glorbit`
-- `gnss.py`: method `STOParam.__init__`, method `EOPParam.__init__`, method `IONParam.__init__`, method `Obs.sort`, function `sid2prn`, function `tropmapfSBAS`, function `atmosParam`, function `tropheightCorr`, function `tropmodelSBAS`, function `load_config`
-- `pppssr.py`: class `pppos`, method `pppos.__init__`, method `pppos.base_process`
+- `cssr_has.py`: method `cnav_msg.decode_has_header`
+- `cssr_pvs.py`: function `decode_sinca_line`
+- `cssrlib.py`: function `sgnss2sys`, function `sys2sgnss`, method `cssr.set_time`, method `cssr.merge_cssr`, method `cssre.encode_mask`, method `cssre.quality2qi`
+- `ephemeris.py`: function `deq`, function `glorbit`, function `geph2rel`, function `eccentricAnomaly`, function `eph2rel`, function `satpos`, function `loadXmlAlmanac`, function `loadyuma`, function `findalm`, function `alm2pos`
+- `gnss.py`: method `STOParam.__init__`, method `EOPParam.__init__`, method `IONParam.__init__`, method `Obs.sort`, function `glo2time`, function `tod2tow`, function `sys2str`, function `sid2prn`, function `deg2dms`, function `ionppp`, function `mapfParam`, function `tropmapfSBAS`, function `atmosParam`, function `tropheightCorr`, function `tropmodelSBAS`, function `load_config`
+- `peph.py`: method `peph.parse_satlist`, method `peph.parse_acclist`, method `peph.parse_sp3`, method `peph.write_sp3`, method `atxdec.readngspcv`, method `biasdec.getdcb`, method `biasdec.getosbstd`
+- `pppssr.py`: class `pppos`, method `pppos.__init__`, method `pppos.sysidx`, method `pppos.base_process`
+- `rinex.py`: method `rnxdec.getSignals`, method `rnxdec.decode_clk`, method `rnxenc.rnx_nav_header`, method `rnxenc.rnx_nav_body`, method `rnxenc.rnx_gnav_body`, method `rnxenc.rnx_snav_body`
 - `rtk.py`: method `rtkpos.base_process`
 
 ## Full symbol table
@@ -114,7 +118,7 @@ apart, so check before concluding a port is unnecessary.
 | class | `cnav_msg` | `ssr/has.py` |
 | method | `cnav_msg.__init__` | `ssr/has.py` |
 | method | `cnav_msg.load_gmat` | `ssr/has.py` |
-| method | `cnav_msg.decode_has_header` | `ssr/has.py` |
+| method | `cnav_msg.decode_has_header` | -- |
 | method | `cnav_msg.decode_has_page` | `ssr/has.py` |
 | method | `cnav_msg.decode_cnav` | `ssr/has.py` |
 
@@ -141,7 +145,7 @@ apart, so check before concluding a port is unnecessary.
 
 | kind | upstream symbol | now in |
 | --- | --- | --- |
-| function | `decode_sinca_line` | `ssr/pvs.py` |
+| function | `decode_sinca_line` | -- |
 | class | `cssr_pvs` | `ssr/pvs.py` |
 | method | `cssr_pvs.__init__` | `ssr/pvs.py` |
 | method | `cssr_pvs.slot2sat` | `ssr/pvs.py` |
@@ -165,8 +169,8 @@ apart, so check before concluding a port is unnecessary.
 | class | `sSigQZS` | `ssr/base.py` |
 | class | `sSigSBS` | `ssr/base.py` |
 | class | `sSigIRN` | `ssr/base.py` |
-| function | `sgnss2sys` | `ssr/base.py` |
-| function | `sys2sgnss` | `ssr/base.py` |
+| function | `sgnss2sys` | -- |
+| function | `sys2sgnss` | -- |
 | class | `local_corr` | `ssr/base.py` |
 | method | `local_corr.__init__` | `ssr/base.py` |
 | class | `cssr` | `ssr/base.py` |
@@ -212,7 +216,7 @@ apart, so check before concluding a port is unnecessary.
 | method | `cssr.merge_cssr` | -- |
 | class | `cssre` | `ssr/base.py` |
 | method | `cssre.__init__` | `ssr/base.py` |
-| method | `cssre.encode_mask` | `ssr/base.py` |
+| method | `cssre.encode_mask` | -- |
 | method | `cssre.quality2qi` | -- |
 
 ### `ephemeris.py`
@@ -225,18 +229,18 @@ apart, so check before concluding a port is unnecessary.
 | function | `glorbit` | -- |
 | function | `geph2pos` | `models/ephemeris.py` |
 | function | `geph2clk` | `models/ephemeris.py` |
-| function | `geph2rel` | `models/ephemeris.py` |
-| function | `eccentricAnomaly` | `models/ephemeris.py` |
+| function | `geph2rel` | -- |
+| function | `eccentricAnomaly` | -- |
 | function | `sys2MuOmega` | `models/ephemeris.py` |
 | function | `eph2pos` | `models/ephemeris.py` |
 | function | `eph2clk` | `models/ephemeris.py` |
-| function | `eph2rel` | `models/ephemeris.py` |
-| function | `satpos` | `models/ephemeris.py` |
+| function | `eph2rel` | -- |
+| function | `satpos` | -- |
 | function | `satposs` | `models/ephemeris.py` |
-| function | `loadXmlAlmanac` | `models/ephemeris.py` |
-| function | `loadyuma` | `models/ephemeris.py` |
-| function | `findalm` | `models/ephemeris.py` |
-| function | `alm2pos` | `models/ephemeris.py` |
+| function | `loadXmlAlmanac` | -- |
+| function | `loadyuma` | -- |
+| function | `findalm` | -- |
+| function | `alm2pos` | -- |
 
 ### `gnss.py`
 
@@ -286,7 +290,7 @@ apart, so check before concluding a port is unnecessary.
 | method | `Nav.__init__` | `domain/structs.py` |
 | function | `epoch2time` | `domain/timescale.py` |
 | function | `timeget` | `domain/timescale.py` |
-| function | `glo2time` | `domain/timescale.py` |
+| function | `glo2time` | -- |
 | function | `gpst2utc` | `domain/timescale.py` |
 | function | `utc2gpst` | `domain/timescale.py` |
 | function | `timeadd` | `domain/timescale.py` |
@@ -304,14 +308,14 @@ apart, so check before concluding a port is unnecessary.
 | function | `str2time` | `domain/timescale.py` |
 | function | `time2str` | `domain/timescale.py` |
 | function | `adjtime` | `domain/timescale.py` |
-| function | `tod2tow` | `domain/timescale.py` |
+| function | `tod2tow` | -- |
 | function | `prn2sat` | `domain/sat.py` |
 | function | `sat2prn` | `domain/sat.py` |
 | function | `sat2id` | `domain/sat.py` |
 | function | `id2sat` | `domain/sat.py` |
 | function | `char2sys` | `domain/sat.py` |
 | function | `sys2char` | `domain/sat.py` |
-| function | `sys2str` | `domain/sat.py` |
+| function | `sys2str` | -- |
 | function | `sid2prn` | -- |
 | function | `vnorm` | `domain/coords.py` |
 | function | `geodist` | ? `core/geometry.py`, `domain/coords.py` |
@@ -323,15 +327,15 @@ apart, so check before concluding a port is unnecessary.
 | function | `ecef2pos` | `domain/coords.py` |
 | function | `pos2ecef` | `domain/coords.py` |
 | function | `ecef2enu` | ? `core/geometry.py`, `domain/coords.py` |
-| function | `deg2dms` | `domain/coords.py` |
-| function | `ionppp` | `domain/coords.py` |
+| function | `deg2dms` | -- |
+| function | `ionppp` | -- |
 | function | `satazel` | ? `core/geometry.py`, `domain/coords.py` |
 | function | `interpc` | ? `domain/coords.py`, `domain/timescale.py` |
 | function | `tropmapf` | `domain/coords.py` |
 | function | `tropmodel` | `domain/coords.py` |
 | function | `meteo` | ? `core/atmosphere.py`, `domain/coords.py` |
 | function | `mapf` | ? `core/atmosphere.py`, `domain/coords.py` |
-| function | `mapfParam` | `domain/timescale.py` |
+| function | `mapfParam` | -- |
 | function | `tropmapfNiell` | `domain/coords.py` |
 | function | `tropmodelSaast` | `domain/coords.py` |
 | function | `meteoHpf` | `domain/coords.py` |
@@ -364,10 +368,10 @@ apart, so check before concluding a port is unnecessary.
 | method | `peph_t.__init__` | `models/precise.py` |
 | class | `peph` | `models/precise.py` |
 | method | `peph.__init__` | `models/precise.py` |
-| method | `peph.parse_satlist` | `models/precise.py` |
-| method | `peph.parse_acclist` | `models/precise.py` |
-| method | `peph.parse_sp3` | `models/precise.py` |
-| method | `peph.write_sp3` | `models/precise.py` |
+| method | `peph.parse_satlist` | -- |
+| method | `peph.parse_acclist` | -- |
+| method | `peph.parse_sp3` | -- |
+| method | `peph.write_sp3` | -- |
 | method | `peph.interppol` | `models/precise.py` |
 | method | `peph.pephpos` | `models/precise.py` |
 | method | `peph.pephclk` | `models/precise.py` |
@@ -378,7 +382,7 @@ apart, so check before concluding a port is unnecessary.
 | class | `atxdec` | `models/antenna.py` |
 | method | `atxdec.__init__` | `models/antenna.py` |
 | method | `atxdec.readpcv` | `models/antenna.py` |
-| method | `atxdec.readngspcv` | `models/antenna.py` |
+| method | `atxdec.readngspcv` | -- |
 | function | `searchpcv` | `models/antenna.py` |
 | function | `substSigTx` | `models/antenna.py` |
 | function | `substSigRx` | `models/antenna.py` |
@@ -401,9 +405,9 @@ apart, so check before concluding a port is unnecessary.
 | class | `biasdec` | `models/bias.py` |
 | method | `biasdec.__init__` | `models/bias.py` |
 | method | `biasdec.doy2time` | `models/bias.py` |
-| method | `biasdec.getdcb` | `models/bias.py` |
+| method | `biasdec.getdcb` | -- |
 | method | `biasdec.getosb` | `models/bias.py` |
-| method | `biasdec.getosbstd` | `models/bias.py` |
+| method | `biasdec.getosbstd` | -- |
 | method | `biasdec.parse` | `models/bias.py` |
 
 ### `ppp.py`
@@ -444,7 +448,7 @@ apart, so check before concluding a port is unnecessary.
 | method | `pppos.II` | `engine/gnssobs.py` |
 | method | `pppos.IT` | `engine/gnssobs.py` |
 | method | `pppos.varerr` | `estimation/residuals.py` |
-| method | `pppos.sysidx` | `estimation/ambiguity.py` |
+| method | `pppos.sysidx` | -- |
 | method | `pppos.udstate` | `estimation/ekf.py` |
 | method | `pppos.find_bias` | `estimation/residuals.py` |
 | method | `pppos.zdres` | `estimation/residuals.py` |
@@ -468,27 +472,27 @@ apart, so check before concluding a port is unnecessary.
 | class | `rnxdec` | `fileio/reader.py` |
 | method | `rnxdec.__init__` | `fileio/reader.py` |
 | method | `rnxdec.setSignals` | `fileio/reader.py` |
-| method | `rnxdec.getSignals` | `fileio/reader.py` |
+| method | `rnxdec.getSignals` | -- |
 | method | `rnxdec.autoSubstituteSignals` | `fileio/reader.py` |
 | method | `rnxdec.flt` | `fileio/reader.py` |
 | method | `rnxdec.adjday` | `fileio/reader.py` |
 | method | `rnxdec.decode_time` | `fileio/reader.py` |
 | method | `rnxdec.decode_nav` | `fileio/nav.py` |
 | method | `rnxdec._decode_nav` | `fileio/nav.py` |
-| method | `rnxdec.decode_clk` | `fileio/clk.py` |
+| method | `rnxdec.decode_clk` | -- |
 | method | `rnxdec.decode_obsh` | `fileio/obs.py` |
 | method | `rnxdec._decode_obsh` | `fileio/obs.py` |
 | method | `rnxdec.decode_obs` | `fileio/obs.py` |
 | function | `sync_obs` | `fileio/sync.py` |
 | class | `rnxenc` | `fileio/writer.py` |
 | method | `rnxenc.__init__` | `fileio/writer.py` |
-| method | `rnxenc.rnx_nav_header` | `fileio/writer.py` |
+| method | `rnxenc.rnx_nav_header` | -- |
 | method | `rnxenc.rnx_obs_header` | `fileio/writer.py` |
 | method | `rnxenc.sval` | `fileio/writer.py` |
 | method | `rnxenc.rnx_obs_body` | `fileio/writer.py` |
-| method | `rnxenc.rnx_nav_body` | `fileio/writer.py` |
-| method | `rnxenc.rnx_gnav_body` | `fileio/writer.py` |
-| method | `rnxenc.rnx_snav_body` | `fileio/writer.py` |
+| method | `rnxenc.rnx_nav_body` | -- |
+| method | `rnxenc.rnx_gnav_body` | -- |
+| method | `rnxenc.rnx_snav_body` | -- |
 
 ### `rtk.py`
 
