@@ -345,29 +345,31 @@ class rtkpos(gnssobs):
                 setattr(target, attr, getattr(source, attr))
 
     def _build_frequency_diff(self, rover, base):
+        """Rover-minus-base per band, band n against band n.
+
+        A band contributes only where both receivers observed it; anything
+        else stays zero, which is how the consumers spell "absent".
+
+        This used to difference band 0 and then, for band 1, whichever of
+        the remaining columns happened to be valid first. Two things
+        followed. A satellite missing L2 but carrying L5 had its L5
+        difference placed in slot 1, next to another satellite's L2
+        difference in the same slot, so the column no longer named a
+        frequency. And slots 2 and up were never written at all, so under
+        nf >= 3 -- Galileo E1/E5a/E5b/E6, say -- the third and fourth bands
+        could not form a single difference.
+        """
         nf = self.nav.nf
-        ns, cols = rover.shape
-        result = np.zeros((ns, nf))
+        result = np.zeros((rover.shape[0], nf))
 
-        # assume first column corresponds to primary frequency (e.g., L1)
-        primary_mask = (rover[:, 0] != 0.0) & (base[:, 0] != 0.0)
-        result[primary_mask, 0] = rover[primary_mask, 0] - base[primary_mask, 0]
-
-        if nf <= 1 or cols <= 1 or base.shape[1] <= 1:
+        cols = min(nf, rover.shape[1], base.shape[1])
+        if cols <= 0:
             return result
 
-        cols_2nd = min(cols, base.shape[1])
-        secondary_mask = (rover[:, 1:cols_2nd] != 0.0) & (base[:, 1:cols_2nd] != 0.0)
-        valid_rows = np.any(secondary_mask, axis=1)
-        if not np.any(valid_rows):
-            return result
-
-        secondary_cols = np.argmax(secondary_mask[valid_rows], axis=1) + 1
-        row_idx = np.nonzero(valid_rows)[0]
-        result[row_idx, 1] = (
-            rover[row_idx, secondary_cols] - base[row_idx, secondary_cols]
-        )
-
+        r = rover[:, :cols]
+        b = base[:, :cols]
+        both = (r != 0.0) & (b != 0.0)
+        result[:, :cols] = np.where(both, r - b, 0.0)
         return result
 
     # Deprecated aliases for the previous names (the "_external" / "_dd_only"
