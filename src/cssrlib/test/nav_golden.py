@@ -53,7 +53,12 @@ def _fld(value):
     if isinstance(value, np.ndarray):
         return " ".join(f"{v:.17g}" for v in np.ravel(value))
     if isinstance(value, (list, tuple)):
-        return " ".join(f"{v:.17g}" if isinstance(v, float) else str(v)
+        # int() rather than str(): an IntEnum member stringifies as
+        # 'uGNSS.GPS' on Python 3.10 and as '0' from 3.11 on, and the
+        # fingerprint must not depend on which interpreter wrote it.
+        return " ".join(f"{v:.17g}" if isinstance(v, float)
+                        else str(int(v)) if isinstance(v, int)
+                        else str(v)
                         for v in value)
     if hasattr(value, "time"):
         return f"{value.time}:{value.sec:.17g}"
