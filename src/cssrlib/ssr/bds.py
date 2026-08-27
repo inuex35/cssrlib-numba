@@ -11,6 +11,58 @@ from cssrlib.ssr.base import cssr, sCSSR, sCSSRTYPE, sGNSS, prn2sat, sCType
 from cssrlib.gnss import bdt2time, bdt2gpst, uGNSS, uSIG, uTYP, rSigRnx
 
 
+
+
+# BeiDou PPP uses its own Compact-SSR signal numbering, so this table is
+# not the one in ssr.base. Same reason for hoisting it: it was rebuilt on
+# every call.
+
+gps_tbl = {
+    0: uSIG.L1C,
+    1: uSIG.L1P,
+    4: uSIG.L1L,
+    5: uSIG.L1X,
+    7: uSIG.L2L,
+    8: uSIG.L2X,
+    11: uSIG.L5I,
+    12: uSIG.L5Q,
+    13: uSIG.L5X,
+}
+glo_tbl = {
+    0: uSIG.L1C,
+    1: uSIG.L1P,
+    2: uSIG.L2C,
+}
+
+gal_tbl = {
+    1: uSIG.L1B,
+    2: uSIG.L1C,
+    4: uSIG.L5Q,
+    5: uSIG.L5I,
+    7: uSIG.L7I,
+    8: uSIG.L7Q,
+    11: uSIG.L6C,
+}
+
+bds_tbl = {
+    0: uSIG.L2I,
+    1: uSIG.L1D,
+    2: uSIG.L1P,
+    4: uSIG.L5D,
+    5: uSIG.L5P,
+    7: uSIG.L7D,
+    8: uSIG.L7P,
+    12: uSIG.L6I,
+}
+
+SSIG_TO_USIG = {
+    uGNSS.GPS: gps_tbl,
+    uGNSS.GLO: glo_tbl,
+    uGNSS.GAL: gal_tbl,
+    uGNSS.BDS: bds_tbl,
+}
+
+
 class cssr_bds(cssr):
     def __init__(self, foutname=None):
         super().__init__(foutname)
@@ -23,53 +75,8 @@ class cssr_bds(cssr):
         self.cb_scl = 0.017
 
     def ssig2rsig(self, sys: sGNSS, utyp: uTYP, ssig):
-        gps_tbl = {
-            0: uSIG.L1C,
-            1: uSIG.L1P,
-            4: uSIG.L1L,
-            5: uSIG.L1X,
-            7: uSIG.L2L,
-            8: uSIG.L2X,
-            11: uSIG.L5I,
-            12: uSIG.L5Q,
-            13: uSIG.L5X,
-        }
-        glo_tbl = {
-            0: uSIG.L1C,
-            1: uSIG.L1P,
-            2: uSIG.L2C,
-        }
-
-        gal_tbl = {
-            1: uSIG.L1B,
-            2: uSIG.L1C,
-            4: uSIG.L5Q,
-            5: uSIG.L5I,
-            7: uSIG.L7I,
-            8: uSIG.L7Q,
-            11: uSIG.L6C,
-        }
-
-        bds_tbl = {
-            0: uSIG.L2I,
-            1: uSIG.L1D,
-            2: uSIG.L1P,
-            4: uSIG.L5D,
-            5: uSIG.L5P,
-            7: uSIG.L7D,
-            8: uSIG.L7P,
-            12: uSIG.L6I,
-        }
-
-        usig_tbl_ = {
-            uGNSS.GPS: gps_tbl,
-            uGNSS.GLO: glo_tbl,
-            uGNSS.GAL: gal_tbl,
-            uGNSS.BDS: bds_tbl,
-        }
-
-        usig_tbl = usig_tbl_[sys]
-        return rSigRnx(sys, utyp, usig_tbl[ssig])
+        """BeiDou-PPP signal number -> rSigRnx, for this constellation."""
+        return rSigRnx(sys, utyp, SSIG_TO_USIG[sys][ssig])
 
     def sval(self, u, n, scl):
         """ calculate signed value based on n-bit int, lsb """

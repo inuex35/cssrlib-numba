@@ -56,7 +56,7 @@ destination first.
 | `cssr_pvs.py` | 8 | `ssr/pvs.py` (7) |
 | `cssrlib.py` | 60 | `ssr/base.py` (52), `core/ssr_types.py` (2) |
 | `ephemeris.py` | 18 | `models/ephemeris.py` (8) |
-| `gnss.py` | 101 | `domain/timescale.py` (22), `domain/structs.py` (15), `domain/coords.py` (15), `domain/signal.py` (13), `domain/enums.py` (6), `domain/sat.py` (6) |
+| `gnss.py` | 101 | `domain/timescale.py` (22), `domain/structs.py` (18), `domain/coords.py` (15), `domain/signal.py` (13), `domain/enums.py` (6), `domain/sat.py` (6) |
 | `mlambda.py` | 7 | `core/mlambda.py` (7) |
 | `peph.py` | 45 | `models/antenna.py` (11), `models/frames.py` (11), `models/precise.py` (9), `models/bias.py` (7) |
 | `ppp.py` | 14 | `models/frames.py` (8), `models/tides.py` (6) |
@@ -75,7 +75,7 @@ apart, so check before concluding a port is unnecessary.
 - `cssr_pvs.py`: function `decode_sinca_line`
 - `cssrlib.py`: function `sgnss2sys`, function `sys2sgnss`, method `cssr.set_time`, method `cssr.merge_cssr`, method `cssre.encode_mask`, method `cssre.quality2qi`
 - `ephemeris.py`: function `deq`, function `glorbit`, function `geph2rel`, function `eccentricAnomaly`, function `eph2rel`, function `satpos`, function `loadXmlAlmanac`, function `loadyuma`, function `findalm`, function `alm2pos`
-- `gnss.py`: method `STOParam.__init__`, method `EOPParam.__init__`, method `IONParam.__init__`, method `Obs.sort`, function `glo2time`, function `tod2tow`, function `sys2str`, function `sid2prn`, function `deg2dms`, function `ionppp`, function `mapfParam`, function `tropmapfSBAS`, function `atmosParam`, function `tropheightCorr`, function `tropmodelSBAS`, function `load_config`
+- `gnss.py`: method `Obs.sort`, function `glo2time`, function `tod2tow`, function `sys2str`, function `sid2prn`, function `deg2dms`, function `ionppp`, function `mapfParam`, function `tropmapfSBAS`, function `atmosParam`, function `tropheightCorr`, function `tropmodelSBAS`, function `load_config`
 - `peph.py`: method `peph.parse_satlist`, method `peph.parse_acclist`, method `peph.parse_sp3`, method `peph.write_sp3`, method `atxdec.readngspcv`, method `biasdec.getdcb`, method `biasdec.getosbstd`
 - `pppssr.py`: class `pppos`, method `pppos.__init__`, method `pppos.sysidx`, method `pppos.base_process`
 - `rinex.py`: method `rnxdec.getSignals`, method `rnxdec.decode_clk`, method `rnxenc.rnx_nav_header`, method `rnxenc.rnx_nav_body`, method `rnxenc.rnx_gnav_body`, method `rnxenc.rnx_snav_body`
@@ -270,11 +270,11 @@ apart, so check before concluding a port is unnecessary.
 | method | `gtime_t.__init__` | `domain/timescale.py` |
 | method | `gtime_t.__gt__` | `domain/timescale.py` |
 | class | `STOParam` | `domain/structs.py` |
-| method | `STOParam.__init__` | -- |
+| method | `STOParam.__init__` | `domain/structs.py` |
 | class | `EOPParam` | `domain/structs.py` |
-| method | `EOPParam.__init__` | -- |
+| method | `EOPParam.__init__` | `domain/structs.py` |
 | class | `IONParam` | `domain/structs.py` |
-| method | `IONParam.__init__` | -- |
+| method | `IONParam.__init__` | `domain/structs.py` |
 | class | `Obs` | `domain/structs.py` |
 | method | `Obs.__init__` | `domain/structs.py` |
 | method | `Obs.sort` | -- |
