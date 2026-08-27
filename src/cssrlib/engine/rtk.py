@@ -75,20 +75,16 @@ class rtkpos(gnssobs):
                  cfg=None):
         """ initialize variables for RTK
 
-        Everything that used to distinguish this class from ppprtkpos is now
-        in :func:`cssrlib.estimation.config.rtk_config`; pass ``cfg`` to adjust it.
+        Configuration comes from
+        :func:`cssrlib.estimation.config.rtk_config`; pass ``cfg`` to adjust it.
         """
         super().__init__(nav=nav, pos0=pos0, logfile=logfile,
                          cfg=rtk_config(nf=nav.nf, pmode=nav.pmode)
                          if cfg is None else cfg)
 
-        # The base is a second receiver, not a second engine: it needs its
-        # own per-receiver bookkeeping (edt / el / gf / slip) and nothing
-        # else. Ephemerides, corrections and the processing configuration
-        # are the same for both, so they are shared rather than deepcopied.
-        # Sharing nav.glo_ch is a small fix in itself -- the base used to
-        # populate its own copy of the GLONASS channel table, leaving the
-        # rover's empty for satellites only the base had seen.
+        # The base gets its own per-receiver bookkeeping (edt / el /
+        # gf / slip); ephemerides, corrections and configuration are
+        # shared with the rover.
         self.base_rcv = ReceiverState(nf=self.nav.nf)
 
         if base_nav is None:
@@ -133,17 +129,9 @@ class rtkpos(gnssobs):
 
         np.maximum(rover.slip, base.slip, out=rover.slip)
 
-        # Per-frequency editing: a sat survives qcedit while ANY band
-        # passed, so the bands that failed on either receiver are masked out
-        # here. Consumers (the SD diff below, DD factor builders) already
-        # skip zero L / P.
-        #
-        # Masked into local copies, never into obs / obsb. These belong to
-        # the caller, and sync_obs_hold hands the same base record back for
-        # several rover epochs (5 Hz rover on a 1 Hz base): editing it in
-        # place degraded a record that is meant to be reused, and left every
-        # caller that reads obs.L / obsb.L afterwards looking at data this
-        # method quietly rewrote.
+        # Mask the bands that failed qcedit on either receiver, into
+        # local copies: obs / obsb belong to the caller and the base
+        # record is reused across rover epochs.
         nfu = min(self.nav.nf, obs.L.shape[1])
         eu = rover.edt[np.asarray(obs.sat) - 1, :nfu] > 0
         Lu, Pu = obs.L.copy(), obs.P.copy()
@@ -219,14 +207,8 @@ class rtkpos(gnssobs):
                 if cp == 0 or pr == 0 or lam == 0:
                     continue
 
-                # This band was observed, so it is not an outage: cancel the
-                # increment made above. Without this nothing ever cleared
-                # outc on this path -- it only reached zero by way of the
-                # reset it triggered -- so a continuously tracked satellite
-                # sawtoothed 1..maxout and had its ambiguity wiped and
-                # re-seeded from the pseudorange every maxout+1 epochs. The
-                # EKF driver does the same thing off vsat (see
-                # FilterMixin.process); this is the DD-only equivalent.
+                # Observed band: clear the outage counter incremented
+                # above (the EKF driver does the same off vsat).
                 self.nav.outc[sat_i-1, f] = 0
 
                 j = self.IB(sat_i, f, self.nav.na)
@@ -234,9 +216,6 @@ class rtkpos(gnssobs):
                     self.initx(cp - pr/lam, self.nav.sig_n0**2, j)
 
         # Slip flags consumed: clear so the next qcedit starts clean.
-        # Without this, any sat that ever sees an LLI/GF slip stays flagged
-        # forever and triggers an ambiguity reset every subsequent epoch —
-        # wiping the freshly initialized N before AR can ever ratio-test.
         self.nav.slip[:] = 0
 
     def prepare_double_difference_measurements(
@@ -347,17 +326,9 @@ class rtkpos(gnssobs):
     def _build_frequency_diff(self, rover, base):
         """Rover-minus-base per band, band n against band n.
 
-        A band contributes only where both receivers observed it; anything
-        else stays zero, which is how the consumers spell "absent".
-
-        This used to difference band 0 and then, for band 1, whichever of
-        the remaining columns happened to be valid first. Two things
-        followed. A satellite missing L2 but carrying L5 had its L5
-        difference placed in slot 1, next to another satellite's L2
-        difference in the same slot, so the column no longer named a
-        frequency. And slots 2 and up were never written at all, so under
-        nf >= 3 -- Galileo E1/E5a/E5b/E6, say -- the third and fourth bands
-        could not form a single difference.
+        Differenced per band, so each column names one frequency. A band
+        contributes only where both receivers observed it; anything else
+        stays zero, which is how the consumers spell "absent".
         """
         nf = self.nav.nf
         result = np.zeros((rover.shape[0], nf))

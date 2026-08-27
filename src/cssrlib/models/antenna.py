@@ -356,11 +356,7 @@ def antModelRx(ant, pos, e, sigs):
     Parameters
     ----------
     ant : pcv_t
-        The receiving antenna's PCO/PCV model. This was previously the
-        whole Nav plus an ``rtype`` flag selecting ``nav.rcv_ant`` or
-        ``nav.rcv_ant_b``. nav was read for nothing else, nothing passed
-        rtype != 1, and nothing ever set rcv_ant_b -- so the base branch
-        would have dereferenced None had anything reached it.
+        The receiving antenna's PCO/PCV model.
     pos : np.array
         Receiver position in ECEF
     e : np.array of float

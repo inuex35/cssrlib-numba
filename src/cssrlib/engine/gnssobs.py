@@ -90,9 +90,7 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
         self.nav.el = np.zeros(uGNSS.MAXSAT)
 
         # Observation noise, initial sigmas, process noise and the
-        # processing options all now come from cfg (see cssrlib.estimation.config);
-        # they used to be assigned here and then partly re-assigned by
-        # whichever subclass had been instantiated.
+        # processing options come from cfg (cssrlib.estimation.config).
 
         # Initial state vector
         #
@@ -115,12 +113,8 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
         if lay.ntrop:
             dP[lay.npos] = self.nav.sig_ztd0**2
 
-        # Process noise, addressed through the layout: the hardcoded
-        # 3/4/6/7 offsets silently shifted the iono block when
-        # trop_opt=0 while iono_opt=1 (satellite 1's iono state got
-        # process noise 0), and the ambiguity slice started beyond
-        # q.size (q covers only the first na states — ambiguity process
-        # noise never existed; see nq == na in StateLayout).
+        # Process noise, addressed through StateLayout (q covers the
+        # first na states; ambiguities carry none).
         self.nav.q = np.zeros(self.nav.nq)
         self.nav.q[0:3] = self.nav.sig_qp**2
         if lay.pmode >= 1:  # kinematic

@@ -604,18 +604,15 @@ class ObservationModelMixin:
 
         mode = 1 if len(y) == ns else 0  # 0:DD,1:SD
 
-        # v / H / Ri / Rj / nb are all allocated and filled by _sdres_core
-        # below, sized from the measurement plan rather than the ns*nf*2
-        # upper bound the scalar loop used to need.
+        # v / H / Ri / Rj / nb are allocated and filled by _sdres_core,
+        # sized from the measurement plan.
 
         # Geodetic position
         #
         pos = ecef2pos(x[0:3])
         pos_arr = np.asarray(pos, dtype=np.float64)
         doy = time2doy(obs.t)
-        # Only the wet mapping enters the SD model (it scales the
-        # estimated ZTD); the hydrostatic factor was computed into a
-        # write-only array.
+        # Wet mapping only: it scales the estimated ZTD.
         mapfw_sd = np.zeros(ns, dtype=np.float64)
         for idx_sat in range(ns):
             if el[idx_sat] <= 0.0:

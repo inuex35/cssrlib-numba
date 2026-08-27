@@ -251,12 +251,7 @@ def ast_args(t):
 
 
 def sunmoonpos_eci(tut):
-    """Sun and Moon position in ECI [m] at ``tut`` (UT1).
-
-    Both bodies are always returned. This used to take rsun / rmoon flags
-    that were also the return slots -- passing False got False back -- which
-    cost a caller more than computing the handful of trig terms it saved.
-    """
+    """Sun and Moon position in ECI [m] at ``tut`` (UT1)."""
     ep2000 = [2000, 1, 1, 12, 0, 0]
     t = timediff(tut, epoch2time(ep2000))/86400.0/36525.0
     f = ast_args(t)

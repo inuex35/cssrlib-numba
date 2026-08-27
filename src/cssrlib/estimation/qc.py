@@ -18,9 +18,8 @@ class QualityControlMixin:
         """ Coarse quality control and editing of observations
 
         ``rcv`` is the :class:`ReceiverState` to record the results in,
-        defaulting to this engine's rover. Passing the base's state is how
-        a caller edits base observations; previously the only way was to
-        swap ``self.nav`` out from under the engine.
+        defaulting to this engine's rover; pass the base's state to edit
+        base observations.
         """
         rcv = self.nav.rcv if rcv is None else rcv
 
@@ -32,13 +31,8 @@ class QualityControlMixin:
             if self.nav.pmode > 0:
                 rr_ += self.nav.x[3:6]*tt
         else:
-            # A copy, and an array: the tide correction below is applied with
-            # `rr_ += disp`, which writes through to whatever the caller
-            # passed. single_differences passes nav.rb, so with tidecorr on
-            # and rb held as an ndarray the base coordinate accumulated the
-            # tidal displacement every epoch -- 0.13 m after three, and
-            # growing. Held as a list it happened to escape, because numpy
-            # rebinds rather than extending.
+            # A copy: the tide correction below adds to rr_ in place
+            # and must not write through to the caller's array.
             rr_ = np.array(rr, dtype=float)
 
         # Solid Earth tide corrections
@@ -64,11 +58,7 @@ class QualityControlMixin:
         # Reset previous editing results
         #
         rcv.edt = np.zeros((ns, self.nav.nf), dtype=int)
-        # Slip flags are per-epoch signals too. Only the rover's were
-        # ever cleared (rtk.update_ambiguities zeroes nav.slip), so a
-        # single base-side LLI/GF slip latched forever and the merge
-        # np.maximum(rover.slip, base.slip) reset that satellite's
-        # ambiguity on every following epoch.
+        # Slip flags are per-epoch signals: clear before re-detecting.
         rcv.slip[:, :] = 0
 
         # Loop over all satellites
@@ -146,30 +136,17 @@ class QualityControlMixin:
             #
             for f in range(self.nav.nf):
 
-                # Slot not carried by this constellation (mixed nf). It is
-                # not an observation, so mark it edited: consumers read the
-                # mask per band now, and "not usable" is exactly right for a
-                # slot that is never observed. (It had to stay 0 while the
-                # gate below was np.any, or the padded slot alone would have
-                # dropped the satellite.)
+                # Slot not carried by this constellation (mixed nf):
+                # mark it edited so per-band consumers skip it.
                 if f >= len(sigsCP):
                     rcv.edt[i, f] = 1
                     continue
 
                 # Cycle  slip check by LLI
                 #
-                # LLI=1 is a cycle-slip notification, not a bad observation:
-                # flag the band so udstate() resets its ambiguity, but keep
-                # the measurement (RTKLIB-style). Editing it out instead
-                # leaves nav.slip without a producer, so the reset in
-                # udstate() never fires and the stale ambiguity survives the
-                # slip.
-                # No `continue`: an LLI band still faces the validity
-                # checks below. Skipping them admitted a band with
-                # P = L = 0 whenever the receiver also flagged loss of
-                # lock -- and a zero pseudorange reaches zdres as a
-                # -2e7 m residual that the y == 0 guards downstream
-                # cannot see.
+                # LLI=1 flags the band for the ambiguity reset in
+                # udstate() but keeps the measurement (RTKLIB-style);
+                # the validity checks below still apply to it.
                 if obs.lli[j, f] == 1:
                     rcv.slip[i, f] = 1
                     if self.nav.monlevel > 0:
@@ -256,36 +233,15 @@ class QualityControlMixin:
                                                         sig1.str(), gf0, gf1,
                                                         gf0-gf1))
 
-            # Store satellite which have passed all tests, judged over the
-            # bands its SYSTEM actually selected (a constellation offering
-            # fewer than nav.nf common bands — e.g. GPS L1+L2 in an nf=3
-            # setup — is judged on those bands only, so its satellites are
-            # not punished for a slot that was never selected).
-            #
-            # Within the selected bands the strict gate applies: any edited
-            # band drops the whole satellite. This was relaxed to per-band
-            # admission once (np.all here), on the argument that discarding
-            # a 36 dB-Hz L1 because L2 sat at 14 dB-Hz wastes a good band
-            # -- and the relaxation was measured twice, in different years,
-            # to be wrong. In 2026-07 accepting L5-less GPS and B1I-only
-            # BeiDou-2 measurably poisoned the urban float solution, and
-            # the criterion "judge over the bands the system selected" was
-            # the resolution. In 2026-08 the relaxed gate collapsed the
-            # tokyo run2 tightly-coupled pipeline outright: 284 fixes in
-            # 300 epochs became 0, float RMS 0.13 m became 5.2 m, and
-            # restoring this gate alone -- with every other change of that
-            # commit kept -- restored the baseline print-identically.
-            #
-            # A degraded band on a satellite whose system provides it is a
-            # tracking / multipath canary; the band that still looks clean
-            # is standing next to one that does not.
-            #
-            # The per-band verdicts recorded above still matter: they are
-            # what the DDMeasurements edt / edtb masks report, and the
-            # per-band consumers (udstate, update_ambiguities, zdres,
-            # _sdres_build_plan) read them per band, which under this gate
-            # is equivalent for satellites that survive and exact for the
-            # uncarried slots of mixed-nf systems.
+            # Admit a satellite only when every judged band passes.
+            # The judgment set is the bands its system selected (a
+            # mixed-nf system is judged on the bands it carries); with
+            # sat_band_plan it narrows further to the bands this
+            # satellite has ever produced. Within that set the gate is
+            # strict: one edited band drops the satellite. (Per-band
+            # admission is known-harmful here -- a degraded band is a
+            # multipath canary for its neighbors.) The per-band edt
+            # verdicts above still feed the per-band consumers.
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
             if nf_sys <= 0:
                 rcv.edt[i, :] = 1
