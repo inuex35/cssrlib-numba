@@ -159,31 +159,6 @@ class sSigIRN(IntEnum):
     L9A = 6
 
 
-def sgnss2sys(sys: sGNSS):
-    ugnss_tbl = {
-        sGNSS.GPS: uGNSS.GPS,
-        sGNSS.GLO: uGNSS.GLO,
-        sGNSS.GAL: uGNSS.GAL,
-        sGNSS.BDS: uGNSS.BDS,
-        sGNSS.QZS: uGNSS.QZS,
-        sGNSS.SBS: uGNSS.SBS,
-        sGNSS.BDS3: uGNSS.BDS,
-    }
-    return ugnss_tbl[sys]
-
-
-def sys2sgnss(sys: uGNSS):
-    sgnss_tbl = {
-        uGNSS.GPS: sGNSS.GPS,
-        uGNSS.GLO: sGNSS.GLO,
-        uGNSS.GAL: sGNSS.GAL,
-        uGNSS.BDS: sGNSS.BDS,
-        uGNSS.QZS: sGNSS.QZS,
-        uGNSS.SBS: sGNSS.SBS,
-    }
-    return sgnss_tbl[sys]
-
-
 class local_corr:
     """ class for local corrections """
 
@@ -1321,12 +1296,3 @@ class cssre():
         self.dlen = 0
         self.msgtype = 0
         self.iodssr = 0
-
-    def encode_mask(self, v, bitlen, ofst=1):
-        """ encode n-bit mask with offset """
-        d = 0
-        for p in v:
-            k = p-ofst
-            d |= 1 << (bitlen-k-1)
-
-        return d

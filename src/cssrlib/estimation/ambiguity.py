@@ -515,12 +515,3 @@ class AmbiguityMixin:
                     fix[i, f] = 3
                     n_held += 1
         return n_held
-
-    def sysidx(self, satlist, sys_ref):
-        """ return index of satellites with sys=sys_ref """
-        idx = []
-        for k, sat in enumerate(satlist):
-            sys, _ = sat2prn(sat)
-            if sys == sys_ref:
-                idx.append(k)
-        return idx

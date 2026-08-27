@@ -85,13 +85,6 @@ class rnxdec(NavFileMixin, ObsFileMixin, ClockFileMixin):
                 sys_idx[typ] = {sig.str(): idx for idx, sig in enumerate(sigs)}
             self.sig_index[sys] = sys_idx
 
-    def getSignals(self, sys, typ):
-        """ retrieve signal list for constellation and obs type """
-        if sys in self.sig_tab.keys() and typ in self.sig_tab[sys].keys():
-            return self.sig_tab[sys][typ]
-        else:
-            return []
-
     def autoSignals(self, decb=None, max_freq=2, **kwargs):
         """Detect signals from the decoded header and apply them.
 
