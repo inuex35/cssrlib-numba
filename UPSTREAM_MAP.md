@@ -58,8 +58,8 @@ destination first.
 | `ephemeris.py` | 18 | `models/ephemeris.py` (8) |
 | `gnss.py` | 101 | `domain/timescale.py` (22), `domain/structs.py` (15), `domain/coords.py` (15), `domain/signal.py` (13), `domain/enums.py` (6), `domain/sat.py` (6) |
 | `mlambda.py` | 7 | `core/mlambda.py` (7) |
-| `peph.py` | 45 | `models/antenna.py` (11), `models/precise.py` (9), `models/bias.py` (7), `models/frames.py` (3) |
-| `ppp.py` | 14 | `models/tides.py` (6) |
+| `peph.py` | 45 | `models/antenna.py` (11), `models/frames.py` (11), `models/precise.py` (9), `models/bias.py` (7) |
+| `ppp.py` | 14 | `models/frames.py` (8), `models/tides.py` (6) |
 | `ppprtk.py` | 2 | `engine/ppprtk.py` (2) |
 | `pppssr.py` | 22 | `estimation/residuals.py` (5), `estimation/ekf.py` (4), `estimation/ambiguity.py` (4), `engine/gnssobs.py` (3), `estimation/qc.py` (1) |
 | `rinex.py` | 26 | `fileio/reader.py` (7), `fileio/writer.py` (5), `fileio/obs.py` (3), `fileio/clk.py` (2), `fileio/nav.py` (2), `fileio/sync.py` (1) |
@@ -389,17 +389,17 @@ apart, so check before concluding a port is unnecessary.
 | function | `antModelTx` | `models/antenna.py` |
 | function | `antModelRx` | `models/antenna.py` |
 | function | `apc2com` | `models/antenna.py` |
-| function | `Rx` | ? `models/frames.py`, `models/tides.py` |
-| function | `Ry` | ? `models/frames.py`, `models/tides.py` |
-| function | `Rz` | ? `models/frames.py`, `models/tides.py` |
-| function | `nut_iau1980` | ? `models/frames.py`, `models/tides.py` |
+| function | `Rx` | `models/frames.py` |
+| function | `Ry` | `models/frames.py` |
+| function | `Rz` | `models/frames.py` |
+| function | `nut_iau1980` | `models/frames.py` |
 | function | `time2sec` | `models/frames.py` |
-| function | `utc2gmst` | ? `models/frames.py`, `models/tides.py` |
+| function | `utc2gmst` | `models/frames.py` |
 | function | `orb2ecef` | `models/frames.py` |
-| function | `eci2ecef` | ? `models/frames.py`, `models/tides.py` |
-| function | `ast_args` | ? `models/frames.py`, `models/tides.py` |
+| function | `eci2ecef` | `models/frames.py` |
+| function | `ast_args` | `models/frames.py` |
 | function | `sunmoonpos_eci` | `models/frames.py` |
-| function | `sunmoonpos` | ? `models/frames.py`, `models/tides.py` |
+| function | `sunmoonpos` | `models/frames.py` |
 | class | `bias_t` | `models/bias.py` |
 | method | `bias_t.__init__` | `models/bias.py` |
 | class | `biasdec` | `models/bias.py` |
@@ -414,14 +414,14 @@ apart, so check before concluding a port is unnecessary.
 
 | kind | upstream symbol | now in |
 | --- | --- | --- |
-| function | `nut_iau1980` | ? `models/frames.py`, `models/tides.py` |
-| function | `ast_args` | ? `models/frames.py`, `models/tides.py` |
-| function | `Rx` | ? `models/frames.py`, `models/tides.py` |
-| function | `Ry` | ? `models/frames.py`, `models/tides.py` |
-| function | `Rz` | ? `models/frames.py`, `models/tides.py` |
-| function | `utc2gmst` | ? `models/frames.py`, `models/tides.py` |
-| function | `eci2ecef` | ? `models/frames.py`, `models/tides.py` |
-| function | `sunmoonpos` | ? `models/frames.py`, `models/tides.py` |
+| function | `nut_iau1980` | `models/frames.py` |
+| function | `ast_args` | `models/frames.py` |
+| function | `Rx` | `models/frames.py` |
+| function | `Ry` | `models/frames.py` |
+| function | `Rz` | `models/frames.py` |
+| function | `utc2gmst` | `models/frames.py` |
+| function | `eci2ecef` | `models/frames.py` |
+| function | `sunmoonpos` | `models/frames.py` |
 | function | `shapiro` | `models/tides.py` |
 | function | `windupcorr` | `models/tides.py` |
 | function | `tide_pl` | `models/tides.py` |
@@ -511,20 +511,12 @@ change to one of these means checking both.
 
 | symbol | modules |
 | --- | --- |
-| `Rx` | `models/frames.py`, `models/tides.py` |
-| `Ry` | `models/frames.py`, `models/tides.py` |
-| `Rz` | `models/frames.py`, `models/tides.py` |
-| `ast_args` | `models/frames.py`, `models/tides.py` |
 | `ecef2enu` | `core/geometry.py`, `domain/coords.py` |
-| `eci2ecef` | `models/frames.py`, `models/tides.py` |
 | `geodist` | `core/geometry.py`, `domain/coords.py` |
 | `interpc` | `domain/coords.py`, `domain/timescale.py` |
 | `mapf` | `core/atmosphere.py`, `domain/coords.py` |
 | `meteo` | `core/atmosphere.py`, `domain/coords.py` |
-| `nut_iau1980` | `models/frames.py`, `models/tides.py` |
 | `satazel` | `core/geometry.py`, `domain/coords.py` |
-| `sunmoonpos` | `models/frames.py`, `models/tides.py` |
-| `utc2gmst` | `models/frames.py`, `models/tides.py` |
 
 ## Stale entries in DELETED
 

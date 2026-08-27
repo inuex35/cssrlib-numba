@@ -9,29 +9,44 @@ from cssrlib.domain.enums import *  # noqa: F401,F403
 from cssrlib.domain.timescale import *  # noqa: F401,F403
 
 
+# The three RINEX-4 parameter records below hold their arrays per instance.
+# They used to be class attributes, which meant one array shared by every
+# instance ever made: the decoder writes some of them in place (NeQuick-G,
+# BDGIM, EOP, STO) and only rebinds others (Klobuchar), so a Galileo
+# ionosphere record and a BeiDou one were the same nine numbers, whichever
+# was read last, and decoding two files in one process carried the first
+# file's parameters into the second.
+
+
 class STOParam():
     """ System Time and UTC Office """
-    sbas = 0  # SBAS ID
-    prm = [0, 0]  # System time offset parameter
-    t_ot = None  # reference epoch
-    t_t = 0.0  # transmission time of message (Time of week [sec])
-    a = np.zeros(3)  # a0, a1, a2
+
+    def __init__(self):
+        self.sbas = 0  # SBAS ID
+        self.prm = [0, 0]  # System time offset parameter
+        self.t_ot = None  # reference epoch
+        self.t_t = 0.0  # transmission time of message (Time of week [sec])
+        self.a = np.zeros(3)  # a0, a1, a2
 
 
 class EOPParam():
     """ Earth Orientation Parameter """
-    prm = np.zeros(9)
-    # EOP parameters (xp,dxp,ddxp,yp,dyp,ddyp,dut1,ddut1,dddut1)
-    t_ot = None  # reference epoch
-    t_t = 0.0  # transmission time of message (Time of week [sec])
+
+    def __init__(self):
+        # EOP parameters (xp,dxp,ddxp,yp,dyp,ddyp,dut1,ddut1,dddut1)
+        self.prm = np.zeros(9)
+        self.t_ot = None  # reference epoch
+        self.t_t = 0.0  # transmission time of message (Time of week [sec])
 
 
 class IONParam():
     """ Ionospheric delay model Parameter """
-    iod = 0
-    prm = np.zeros(9)  # ION parameters
-    t_tm = None  # transmission time
-    region = None
+
+    def __init__(self):
+        self.iod = 0
+        self.prm = np.zeros(9)  # ION parameters
+        self.t_tm = None  # transmission time
+        self.region = None
 
 
 class Obs():
