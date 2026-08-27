@@ -18,11 +18,6 @@ import numpy as np
 from cssrlib.models.frames import orb2ecef
 
 
-NMAX = 10
-MAXDTE = 900.0
-EXTERR_CLK = 1e-3
-EXTERR_EPH = 5e-7
-
 
 class pcv_t():
     def __init__(self):

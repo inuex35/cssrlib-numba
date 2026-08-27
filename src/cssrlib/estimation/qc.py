@@ -5,22 +5,11 @@ into the ReceiverState of whichever receiver is being edited."""
 
 import numpy as np
 
-from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
-from cssrlib.gnss import uTropoModel, ecef2pos, geodist, satazel
+from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS
+from cssrlib.gnss import ecef2pos, geodist, satazel
 from cssrlib.gnss import time2str, timediff, gpst2utc
 from cssrlib.models.tides import tidedisp, tidedispIERS2010, uTideModel
 
-# format definition for logging
-fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
-fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f}\n"
-fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
-fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f} {:10.3f}\n"
-
-MIN_SIN_EL = 0.1 * rCST.D2R
-TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
-TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 class QualityControlMixin:
     """Quality control, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
