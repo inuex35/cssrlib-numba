@@ -67,7 +67,7 @@ class ppprtkpos(gnssobs):
     def __init__(self, nav, pos0=np.zeros(3), logfile=None, cfg=None):
         """ initialize variables for PPP-RTK
 
-        Everything that used to distinguish this class from rtkpos is now in
+        Configuration comes from
         :func:`cssrlib.estimation.config.ppprtk_config`; pass ``cfg`` to adjust it.
         """
         super().__init__(nav=nav, pos0=pos0, logfile=logfile,

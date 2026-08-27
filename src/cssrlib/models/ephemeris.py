@@ -70,11 +70,7 @@ def dtadjust(t1, t2, tw=604800):
 def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=1.0):
     """ calculate GLONASS satellite position based on ephemeris
 
-    The RK4 integration itself lives in :mod:`cssrlib.models.glonass`, which
-    compiles it with Numba. This module used to carry a second, pure-Python
-    copy of the same integrator and call that instead, so every GLONASS
-    satellite of every epoch ran the slow one -- 40x, measured over a 900 s
-    propagation -- while the compiled kernel sat unreferenced.
+    The RK4 integration lives in :mod:`cssrlib.models.glonass` (Numba).
     """
     t = timediff(time, geph.toe)
     rs, vs, dts = propagate_glonass(t, geph.pos, geph.vel, geph.acc,
@@ -208,10 +204,8 @@ def satposs(obs, nav, cs=None, orb=None):
         if sys not in obs.sig.keys():
             continue
 
-        # Signal flight time from the first band with a code
-        # observation: under per-band admission a satellite may carry
-        # no band 0, and pr=0 put the satellite ~75 ms (hundreds of
-        # meters of orbit motion) off.
+        # Signal flight time from the first band carrying a code
+        # observation (band 0 may be absent).
         prv = obs.P[i][obs.P[i] != 0.0]
         if prv.size == 0:
             continue
@@ -403,11 +397,8 @@ def satposs(obs, nav, cs=None, orb=None):
             nsat += 1
 
     if cs is not None and n > 0:
-        # Advance the previous-ORBIT-epoch marker read above when
-        # differencing sis. This used the loop variable leaked from the
-        # for above -- a NameError when obs was empty; the last listed
-        # satellite is now taken explicitly (its correction epoch is
-        # the batch's).
+        # Remember this batch's ORBIT-correction epoch (read above when
+        # differencing sis), taken from the last listed satellite.
         sat = obs.sat[n-1]
         if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
             nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]

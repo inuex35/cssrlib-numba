@@ -2,11 +2,6 @@
 
 The Earth-orientation machinery these need -- rotation matrices, IAU1980
 nutation, ECI<->ECEF, Sun and Moon -- lives in :mod:`cssrlib.models.frames`.
-This module used to carry a second, independent implementation of all eight
-of those functions, 237 lines agreeing with frames to floating-point noise
-except where it did not: its eci2ecef was declared to take GPS time and was
-handed UTC, putting the sidereal angle a leap second offset (18 s in 2021,
-271 arcsec of Earth rotation) early.
 """
 import cssrlib.gnss as gn
 from cssrlib.gnss import gpst2utc, time2epoch

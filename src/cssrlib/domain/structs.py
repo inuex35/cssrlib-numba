@@ -10,13 +10,9 @@ from cssrlib.domain.enums import uTideModel
 from cssrlib.domain.timescale import *  # noqa: F401,F403
 
 
-# The three RINEX-4 parameter records below hold their arrays per instance.
-# They used to be class attributes, which meant one array shared by every
-# instance ever made: the decoder writes some of them in place (NeQuick-G,
-# BDGIM, EOP, STO) and only rebinds others (Klobuchar), so a Galileo
-# ionosphere record and a BeiDou one were the same nine numbers, whichever
-# was read last, and decoding two files in one process carried the first
-# file's parameters into the second.
+# The RINEX-4 parameter records hold their arrays per instance: the
+# decoder writes them in place, so class-level arrays would be shared
+# across records.
 
 
 class STOParam():
@@ -155,12 +151,7 @@ class Geph():
 
     def __init__(self, sat=0):
         self.sat = sat
-        # Mutable state lives on the instance. As class attributes these
-        # arrays (and the gtime_t epochs) were one object shared by every
-        # ephemeris ever constructed; pos/vel/acc escaped because the
-        # decoder rebinds them, but urai is written in place there, so
-        # every GLONASS satellite in a file reported whichever URAI was
-        # decoded last. Same repair the RINEX-4 parameter records got.
+        # Mutable arrays and epochs live on the instance, not the class.
         self.toe = gtime_t()
         self.tof = gtime_t()
         self.pos = np.zeros(3)
@@ -184,7 +175,7 @@ class Seph():
 
     def __init__(self, sat=0):
         self.sat = sat
-        # Per instance for the same reason as Geph above.
+        # Mutable arrays and epochs live on the instance, not the class.
         self.t0 = gtime_t()
         self.tof = gtime_t()
         self.pos = np.zeros(3)
@@ -218,9 +209,8 @@ class Alm():
 class NavData():
     """Navigation data: ephemerides, corrections, antennas.
 
-    Read-mostly, and identical for every receiver in a session -- which is
-    why rover and base can share one instance instead of the base getting a
-    deepcopy of everything.
+    Read-mostly and identical for every receiver, so rover and base
+    share one instance.
     """
 
     def __init__(self):
@@ -287,10 +277,6 @@ class ProcConfig():
 
         self.trpModel = uTropoModel.SAAST
         self.ionoModel = uIonoModel.KLOBUCHAR
-        # uTideModel.NONE, by name: the previous `False` compared equal
-        # to uTideModel.SIMPLE (== 0), so a bare Nav() silently applied
-        # the solid-earth tide model. The config factories overwrite
-        # this, which is how it went unnoticed.
         self.tidecorr = uTideModel.NONE
 
         # 0: use trop-model, 1: estimate, 2: use cssr correction
@@ -304,21 +290,10 @@ class ProcConfig():
         self.monlevel = 1
         self.cnr_min = 25
         self.cnr_min_gpy = 15
-        # Judge each satellite over the bands it actually transmits.
-        #
-        # The gate always judges over the bands the system selected; with
-        # this False (the default) a satellite missing one of them -- a
-        # pre-IIF GPS that carries no L5, a BeiDou-2 that carries only
-        # B1I -- is dropped outright, all session. On tokyo run2 that
-        # discards 19 of 47 satellites structurally, among them a 91%-
-        # present, 48 dB-Hz GPS. With True, the judgment set per satellite
-        # is the selected bands it has ever produced this session
-        # (ReceiverState.band_seen); WITHIN that set the gate stays
-        # strict, so a satellite whose transmitted band degrades is
-        # dropped exactly as before. 2026-07 measured admitting these
-        # populations harmful on that estimator ("L5-less GPS / B1I-only
-        # BDS-2 poison the urban float"); this flag exists so the current
-        # estimator can measure it again rather than inherit the verdict.
+        # True: qcedit judges each satellite over the selected bands it
+        # has ever produced this session (ReceiverState.band_seen),
+        # strict within that set. False: a satellite missing any
+        # selected band is dropped outright.
         self.sat_band_plan = False
         self.maxout = 5  # maximum outage [epochs]
 
@@ -360,8 +335,7 @@ class ProcConfig():
 class ReceiverState():
     """Per-receiver bookkeeping for one epoch and its history.
 
-    One instance per receiver. rtkpos gives the base its own, which is what
-    let the rover/base pair gf / gf_r collapse into a single ``gf``.
+    One instance per receiver; rtkpos gives the base its own.
     """
 
     def __init__(self, nf=2):
@@ -375,12 +349,8 @@ class ReceiverState():
         # the carrier phase has been valid. Resets to 0 on outage; used by
         # rtklib_mode arfilter to demote newly-acquired satellites.
         self.lock = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
-        # The demo5 retry's memory, per receiver like the lock counters it
-        # works with: the round-robin cursor, and arfilter's two previous
-        # ratios (pass-1 of the last epoch / of the last successful one).
-        # These are runtime state, not configuration -- excsat lived in
-        # ProcConfig for a while and prev_ratio1/2 fell through the gap
-        # between the containers entirely (cold-start AttributeError).
+        # demo5 retry memory: the round-robin cursor and arfilter's
+        # two previous ratios.
         self.excsat = 0
         self.prev_ratio1 = 0.0
         self.prev_ratio2 = 0.0
@@ -389,17 +359,12 @@ class ReceiverState():
         # Cleared by udstate after the reset is applied.
         self.slip = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
 
-        # Which selected bands this satellite has ever produced (L and P
-        # both nonzero at least once this session), per receiver. This is
-        # the observable proxy for the satellite's signal plan: a Block
-        # IIR GPS never shows L5, a BeiDou-2 never shows B1C/B2a. Sticky
-        # for the session -- a band once seen stays seen -- so a tracking
-        # dropout does not masquerade as "not transmitted".
+        # Selected bands this satellite has ever produced (L and P both
+        # nonzero at least once), sticky for the session: the observable
+        # proxy for its signal plan.
         self.band_seen = np.zeros((uGNSS.MAXSAT, nf), dtype=bool)
 
-        # geometry-free combination for cycle-slip detection, this
-        # receiver's own. There used to be a second table, gf_r, because one
-        # Nav had to hold the base's as well.
+        # geometry-free combination for cycle-slip detection
         self.gf = np.zeros(uGNSS.MAXSAT)
 
         self.el = np.zeros(uGNSS.MAXSAT)
@@ -408,9 +373,8 @@ class ReceiverState():
         self.sat = np.zeros(0, dtype=int)
         self.t = gtime_t()
         self.tt = 0
-        # SSR signal-in-space bookkeeping (models/ephemeris.py): the
-        # previous ORBIT-correction epoch. It was read there before any
-        # code ever assigned it -- AttributeError on the first SSR epoch.
+        # Previous ORBIT-correction epoch (SSR sis bookkeeping in
+        # models/ephemeris.py).
         self.time_p = gtime_t()
 
         self.smode = 0  # 0:NONE,1:std,2:DGPS,4:fix,5:float
