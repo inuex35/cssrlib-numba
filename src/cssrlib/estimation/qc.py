@@ -132,11 +132,14 @@ class QualityControlMixin:
             #
             for f in range(self.nav.nf):
 
-                # Slot not carried by this constellation (mixed nf): treat as
-                # absent. Do NOT set edt -- the downstream
-                # "np.any(edt[sat,:]>0)" check would otherwise drop the whole
-                # satellite (the padded slot is never observed).
+                # Slot not carried by this constellation (mixed nf). It is
+                # not an observation, so mark it edited: consumers read the
+                # mask per band now, and "not usable" is exactly right for a
+                # slot that is never observed. (It had to stay 0 while the
+                # gate below was np.any, or the padded slot alone would have
+                # dropped the satellite.)
                 if f >= len(sigsCP):
+                    rcv.edt[i, f] = 1
                     continue
 
                 # Cycle  slip check by LLI
@@ -238,14 +241,24 @@ class QualityControlMixin:
             # bands its SYSTEM actually selected (a constellation offering
             # fewer than nav.nf common bands — e.g. GPS L1+L2 in an nf=3
             # setup — is judged on those bands only, so its satellites are
-            # not punished for a slot that was never selected). Within the
-            # selected bands the classic strict gate applies: any edited
-            # band drops the whole satellite — a missing or degraded band
-            # on a satellite whose system does provide it is a tracking /
-            # multipath canary (admitting L5-less GPS or B1I-only BeiDou-2
-            # measurably poisons the urban float solution).
+            # not punished for a slot that was never selected).
+            #
+            # Within the selected bands the editing is per band, as the
+            # per-band tests above already record it: a satellite survives
+            # while it has one usable band, and the bands that failed stay
+            # marked so consumers skip them individually. This gate used to
+            # be np.any -- one bad band condemned the satellite, which made
+            # every edt row uniformly 0 or 1 and the per-band tests
+            # decorative. On the bundled 25 epochs that discarded a 36 dB-Hz
+            # G01 L1 in 20 satellite-epochs because G01 L2 sat at 14 dB-Hz.
+            #
+            # The opposite risk is real and is why the strict gate existed:
+            # a degraded band is a tracking / multipath canary, and admitting
+            # L5-less GPS or B1I-only BeiDou-2 can poison an urban float
+            # solution. That trade is now the caller's to make through
+            # cnr_min / elmin rather than a hidden all-or-nothing rule.
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
-            if nf_sys <= 0 or np.any(rcv.edt[i, :nf_sys] > 0):
+            if nf_sys <= 0 or np.all(rcv.edt[i, :nf_sys] > 0):
                 rcv.edt[i, :] = 1
                 continue
 

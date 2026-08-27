@@ -70,7 +70,7 @@ class FilterMixin:
                 # is per band, and the GF detector, which cannot attribute
                 # the jump, already raises both bands itself.
                 reset = (self.nav.outc[i, f] > self.nav.maxout
-                         or np.any(self.nav.edt[i, :] > 0)
+                         or self.nav.edt[i, f] > 0
                          or self.nav.slip[i, f] > 0)
                 if sys_i not in obs.sig.keys():
                     continue
@@ -118,7 +118,9 @@ class FilterMixin:
 
                 # Do not initialize invalid observations
                 #
-                if np.any(self.nav.edt[sat[i]-1, :] > 0):
+                # Per band: editing is per band now, so a satellite kept for
+                # its good band must still have that band initialized.
+                if self.nav.edt[sat[i]-1, f] > 0:
                     continue
 
                 if f >= self.nsig_sys(obs, sys[i]):  # slot not carried (mixed nf)
