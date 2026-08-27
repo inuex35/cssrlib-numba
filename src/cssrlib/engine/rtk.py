@@ -200,6 +200,17 @@ class rtkpos(gnssobs):
                 cp, pr = obs.L[i, f], obs.P[i, f]
                 if cp == 0 or pr == 0 or lam == 0:
                     continue
+
+                # This band was observed, so it is not an outage: cancel the
+                # increment made above. Without this nothing ever cleared
+                # outc on this path -- it only reached zero by way of the
+                # reset it triggered -- so a continuously tracked satellite
+                # sawtoothed 1..maxout and had its ambiguity wiped and
+                # re-seeded from the pseudorange every maxout+1 epochs. The
+                # EKF driver does the same thing off vsat (see
+                # FilterMixin.process); this is the DD-only equivalent.
+                self.nav.outc[sat_i-1, f] = 0
+
                 j = self.IB(sat_i, f, self.nav.na)
                 if self.nav.x[j] == 0.0:
                     self.initx(cp - pr/lam, self.nav.sig_n0**2, j)

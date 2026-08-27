@@ -1,4 +1,4 @@
-"""The cycle-slip flag, and the filter that must honour it.
+"""Two paths that record ambiguity bookkeeping, and the flags they must honour.
 
 qcedit stopped raising ``edt`` for LLI / GF cycle slips -- an LLI is a
 slip notification, not a bad observation -- and started recording
@@ -7,8 +7,14 @@ after the reset is applied". udstate never read it: the word ``slip`` did
 not appear in the filter at all, so on the PPP / PPP-RTK path a slipped
 satellite kept its pre-slip ambiguity.
 
-The bundled base station supplies the real event: every satellite in
-``3034078M1.21O`` carries LLI=1 at 12:00:18.
+The DD-only path had the mirror-image hole. ``update_ambiguities``
+incremented ``outc`` every epoch for every satellite and never cleared it
+for the ones it could see, so a continuously tracked satellite reached
+``maxout`` on a fixed period and had its ambiguity wiped and re-seeded
+from the pseudorange -- the carrier phase never accumulated.
+
+The bundled base station supplies the real event for the first: every
+satellite in ``3034078M1.21O`` carries LLI=1 at 12:00:18.
 """
 
 import numpy as np
@@ -21,6 +27,22 @@ from cssrlib.test.golden_harness import setup
 # Epoch index (0-based, 1 Hz from 12:00:00) at which the base receiver
 # reports loss of lock on every satellite and both bands.
 BASE_LLI_EPOCH = 18
+
+
+def dd_epochs(n):
+    """Yield (index, rtk, dd) for the first ``n`` DD epochs."""
+    dec, decb, rtk = setup()
+    for ep in range(n):
+        obs = dec.decode_obs()
+        obsb = decb.decode_obs()
+        if obs is None or len(obs.sat) == 0:
+            return
+        if obsb is None or len(obsb.sat) == 0:
+            return
+        dd = rtk.prepare_double_difference_measurements(obs, obsb)
+        if dd is None:
+            continue
+        yield ep, rtk, dd
 
 
 def test_the_bundled_base_really_does_report_loss_of_lock():
@@ -131,3 +153,49 @@ def test_the_slip_flag_is_what_causes_that_reset():
             f"sat {sat_} band {band} was re-seeded even with the slip flags "
             f"cleared -- this test is not measuring the slip path")
         assert rtk_a.nav.x[j] != rtk_b.nav.x[j]
+
+
+def test_update_ambiguities_clears_outc_for_observed_satellites():
+    """outc counts outages. A satellite in view is not an outage."""
+    for ep, rtk, dd in dd_epochs(12):
+        rtk.update_ambiguities(dd["obs_sd"])
+        for s in dd["obs_sd"].sat:
+            f0_seen = dd["obs_sd"].L[
+                list(dd["obs_sd"].sat).index(s), 0] != 0.0
+            if f0_seen:
+                assert rtk.nav.outc[int(s) - 1, 0] == 0, (
+                    f"epoch {ep}: sat {int(s)} is observed but outc is "
+                    f"{rtk.nav.outc[int(s)-1, 0]}")
+
+
+def test_update_ambiguities_holds_the_ambiguity_across_maxout():
+    """The regression itself: N must survive more than maxout epochs.
+
+    Before the fix outc sawtoothed 1..maxout and initx(0) fired on the
+    overflow, so N was re-seeded from the pseudorange every maxout+1
+    epochs -- visible as jumps of whole cycles in an otherwise static
+    baseline.
+    """
+    history = {}
+    n_epochs = 0
+    for ep, rtk, dd in dd_epochs(14):
+        rtk.update_ambiguities(dd["obs_sd"])
+        n_epochs += 1
+        for s in dd["obs_sd"].sat:
+            j = rtk.IB(int(s), 0, rtk.nav.na)
+            history.setdefault(int(s), []).append(rtk.nav.x[j])
+        maxout = rtk.nav.maxout
+
+    assert n_epochs > maxout + 1, (
+        f"need more than maxout+1={maxout+1} epochs to show the sawtooth")
+
+    tracked = [s for s, v in history.items()
+               if len(v) == n_epochs and v[0] != 0.0]
+    assert tracked, "no continuously tracked satellite to check"
+
+    for s in tracked:
+        v = np.asarray(history[s])
+        assert np.all(v != 0.0), f"sat {s}: ambiguity was zeroed mid-track"
+        assert np.ptp(v) < 1e-9, (
+            f"sat {s}: ambiguity moved {np.ptp(v):.3f} cycles over "
+            f"{n_epochs} epochs with no slip -- re-seeded from code")
