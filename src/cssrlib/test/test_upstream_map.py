@@ -48,7 +48,7 @@ def mentioned():
 def test_the_map_records_which_upstream_it_was_built_against(mentioned):
     """Without a baseline the map cannot be checked or regenerated."""
     text = open(MAP).read()
-    assert re.search(r"Upstream baseline: `\S+` at `[0-9a-f]{7,}`", text), (
+    assert re.search(r"Upstream baseline: `[0-9a-f]{7,}`", text), (
         "the map does not name the upstream commit it describes")
 
 

@@ -613,13 +613,14 @@ class ObservationModelMixin:
         pos = ecef2pos(x[0:3])
         pos_arr = np.asarray(pos, dtype=np.float64)
         doy = time2doy(obs.t)
-        mapfh_sd = np.zeros(ns, dtype=np.float64)
+        # Only the wet mapping enters the SD model (it scales the
+        # estimated ZTD); the hydrostatic factor was computed into a
+        # write-only array.
         mapfw_sd = np.zeros(ns, dtype=np.float64)
         for idx_sat in range(ns):
             if el[idx_sat] <= 0.0:
                 continue
-            mf, mw = _tropmapf_dispatch_ppp(float(doy), pos_arr, float(el[idx_sat]), int(self.nav.trpModel))
-            mapfh_sd[idx_sat] = mf
+            _, mw = _tropmapf_dispatch_ppp(float(doy), pos_arr, float(el[idx_sat]), int(self.nav.trpModel))
             mapfw_sd[idx_sat] = mw
 
         (

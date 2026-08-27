@@ -64,11 +64,13 @@ upstream symbol went -- `pppos.zdres` is now
 `cssrlib.estimation.residuals.ObservationModelMixin.zdres`, and so on -- and
 which upstream modules were dropped and why.
 
-It is generated. After pulling upstream, rebuild it:
+It is generated against a pinned upstream commit (`DEFAULT_UPSTREAM`
+in `ci/upstream_map.py`), and CI fails if the committed map no longer
+matches. After reviewing a new upstream state, bump the pin and rebuild:
 
 ```
 python ci/upstream_map.py            # rewrite the map
-python ci/upstream_map.py --check    # or just fail if it is stale
+python ci/upstream_map.py --check    # what CI runs
 ```
 
 Testing

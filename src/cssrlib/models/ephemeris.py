@@ -208,8 +208,14 @@ def satposs(obs, nav, cs=None, orb=None):
         if sys not in obs.sig.keys():
             continue
 
-        pr = obs.P[i, 0]  # TODO: catch invalid observation!
-        t = timeadd(obs.t, -pr/rCST.CLIGHT)
+        # Signal flight time from the first band with a code
+        # observation: under per-band admission a satellite may carry
+        # no band 0, and pr=0 put the satellite ~75 ms (hundreds of
+        # meters of orbit motion) off.
+        prv = obs.P[i][obs.P[i] != 0.0]
+        if prv.size == 0:
+            continue
+        t = timeadd(obs.t, -prv[0]/rCST.CLIGHT)
 
         if nav.ephopt == 4:
 
@@ -396,7 +402,13 @@ def satposs(obs, nav, cs=None, orb=None):
 
             nsat += 1
 
-    if cs is not None:
+    if cs is not None and n > 0:
+        # Advance the previous-ORBIT-epoch marker read above when
+        # differencing sis. This used the loop variable leaked from the
+        # for above -- a NameError when obs was empty; the last listed
+        # satellite is now taken explicitly (its correction epoch is
+        # the batch's).
+        sat = obs.sat[n-1]
         if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
             nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]
 

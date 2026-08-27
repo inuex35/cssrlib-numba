@@ -283,7 +283,7 @@ class AmbiguityMixin:
             xa = self.restamb(sol.bias, ix)
         elif parmode == 2 and sol.nfix == 0:
             nb = 0
-            if self.nav.monlevel > 0:
+            if self.nav.monlevel > 0 and self.nav.fout is not None:
                 self.nav.fout.write(
                     "{:s}  Ps={:3.2f} nfix={:d}\n".
                     format(time2str(self.nav.t), sol.ps, sol.nfix))

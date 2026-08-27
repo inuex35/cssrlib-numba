@@ -6,6 +6,7 @@ ReceiverState and FilterState."""
 import numpy as np
 
 from cssrlib.domain.enums import *  # noqa: F401,F403
+from cssrlib.domain.enums import uTideModel
 from cssrlib.domain.timescale import *  # noqa: F401,F403
 
 
@@ -125,12 +126,7 @@ class Geph():
     svh = 0
     sva = 0
     age = 0.0
-    toe = gtime_t()
     toes = 0.0
-    tof = gtime_t()
-    pos = np.zeros(3)
-    vel = np.zeros(3)
-    acc = np.zeros(3)
     taun = 0.0         # SV clock bias [s]
     gamn = 0.0         # SV clock drift [s/s]
     beta = 0.0         # SV clock drift rate [s/s^2]
@@ -142,10 +138,6 @@ class Geph():
     tau_c = 0.0  # GLONASS time scale correction to UTC(SU) time
     dtau_c = 0.0
     tau_gps = 0.0  # correction to GPS time relative to GLONASS time
-
-    # for CDMA
-    urai = np.zeros(2, dtype=int)
-    dpos = np.zeros(3)
 
     psi = 0.0  # yaw angle [rad]
     sn = 0  # sign flag
@@ -160,29 +152,44 @@ class Geph():
 
     src = 0  # source flags (b0-1: Rt, b2-3: Re)
     sattype = 0  # 0 - M(L3), 1 - K1(L3), 3 - K1(L2/L3), 2 - K2 (L1/L2/L3)
-    isc = np.zeros(3)  # 0: ISC_L1OC, 1: ISC_L2OC, 2: ISC_L3OC
 
     def __init__(self, sat=0):
         self.sat = sat
+        # Mutable state lives on the instance. As class attributes these
+        # arrays (and the gtime_t epochs) were one object shared by every
+        # ephemeris ever constructed; pos/vel/acc escaped because the
+        # decoder rebinds them, but urai is written in place there, so
+        # every GLONASS satellite in a file reported whichever URAI was
+        # decoded last. Same repair the RINEX-4 parameter records got.
+        self.toe = gtime_t()
+        self.tof = gtime_t()
+        self.pos = np.zeros(3)
+        self.vel = np.zeros(3)
+        self.acc = np.zeros(3)
+        # for CDMA
+        self.urai = np.zeros(2, dtype=int)
+        self.dpos = np.zeros(3)
+        self.isc = np.zeros(3)  # 0: ISC_L1OC, 1: ISC_L2OC, 2: ISC_L3OC
 
 
 class Seph():
     """ class to define SBAS ephemeris """
     sat = 0
     iodn = 0
-    t0 = gtime_t()
-    tof = gtime_t()
     svh = 0
     sva = 0
-    pos = np.zeros(3)
-    vel = np.zeros(3)
-    acc = np.zeros(3)
     af0 = 0.0
     af1 = 0.0
     mode = 0
 
     def __init__(self, sat=0):
         self.sat = sat
+        # Per instance for the same reason as Geph above.
+        self.t0 = gtime_t()
+        self.tof = gtime_t()
+        self.pos = np.zeros(3)
+        self.vel = np.zeros(3)
+        self.acc = np.zeros(3)
 
 
 class Alm():
@@ -280,7 +287,11 @@ class ProcConfig():
 
         self.trpModel = uTropoModel.SAAST
         self.ionoModel = uIonoModel.KLOBUCHAR
-        self.tidecorr = False
+        # uTideModel.NONE, by name: the previous `False` compared equal
+        # to uTideModel.SIMPLE (== 0), so a bare Nav() silently applied
+        # the solid-earth tide model. The config factories overwrite
+        # this, which is how it went unnoticed.
+        self.tidecorr = uTideModel.NONE
 
         # 0: use trop-model, 1: estimate, 2: use cssr correction
         self.trop_opt = 0
@@ -397,6 +408,10 @@ class ReceiverState():
         self.sat = np.zeros(0, dtype=int)
         self.t = gtime_t()
         self.tt = 0
+        # SSR signal-in-space bookkeeping (models/ephemeris.py): the
+        # previous ORBIT-correction epoch. It was read there before any
+        # code ever assigned it -- AttributeError on the first SSR epoch.
+        self.time_p = gtime_t()
 
         self.smode = 0  # 0:NONE,1:std,2:DGPS,4:fix,5:float
         # number of satellites (observed, calculated, corrected)
@@ -444,7 +459,7 @@ _NAV_FIELDS = {
             "minfixsats", "sat_band_plan"),
     "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
             "excsat", "prev_ratio1", "prev_ratio2",
-            "el", "phw", "sat", "t", "tt", "smode", "nsat"),
+            "el", "phw", "sat", "t", "tt", "smode", "nsat", "time_p"),
     "flt": ("x", "P", "xa", "Pa", "y", "na", "nq", "nx", "ntrop", "niono"),
 }
 
