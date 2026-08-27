@@ -167,18 +167,18 @@ def main():
                 continue
             by_sys.setdefault(sat2prn(int(sat))[0], []).append(i)
 
-        for sys, idxs in by_sys.items():
+        for gs, idxs in by_sys.items():
             if len(idxs) < 2:
                 continue
-            lam = obs.sig[sys][uTYP.L][0].wavelength()
+            lam = obs.sig[gs][uTYP.L][0].wavelength()
 
             # Reference satellite: highest elevation, fixed across epochs.
             cur_ref_idx = max(idxs, key=lambda k: dd.el[k])
-            ref = ref_sat.get(sys)
+            ref = ref_sat.get(gs)
             ref_idx = next((k for k in idxs if int(dd.sat[k]) == ref), None)
             if ref_idx is None:                    # ref absent -> re-pick, reset
                 ref = int(dd.sat[cur_ref_idx])
-                ref_sat[sys] = ref
+                ref_sat[gs] = ref
                 ref_idx = cur_ref_idx
                 for k in idxs:
                     amb_gen[int(dd.sat[k])] = amb_gen.get(int(dd.sat[k]), 0) + 1

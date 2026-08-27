@@ -367,8 +367,8 @@ class NavFileMixin:
                 if len(line) >= 80:
                     geph.svh = int(self.flt(line, 3))
             else:  # L1OC,L3OC
-                sattype = int(self.flt(line, 0))
-                src = int(self.flt(line, 1))
+                geph.sattype = int(self.flt(line, 0))
+                geph.src = int(self.flt(line, 1))
                 geph.aode = int(self.flt(line, 2))
                 geph.aodc = int(self.flt(line, 3))
 
@@ -379,23 +379,37 @@ class NavFileMixin:
                 geph.tau2 = self.flt(line, 3)
 
                 line = fnav.readline()  # line #6
-                geph.yaw = self.flt(line, 0)
+                # The struct's field is psi ("yaw angle [rad]"); writing
+                # geph.yaw invented a new attribute and left psi at zero.
+                geph.psi = self.flt(line, 0)
                 geph.sn = int(self.flt(line, 1))
                 geph.win = self.flt(line, 2)
                 geph.dw = self.flt(line, 3)
 
                 line = fnav.readline()  # line #7
                 geph.wmax = self.flt(line, 0)
-                geph.dpoc[0] = self.flt(line, 1)
-                geph.dpoc[1] = self.flt(line, 2)
-                geph.dpoc[2] = self.flt(line, 3)
+                # dpos, not dpoc: the struct has no dpoc, so this line
+                # raised AttributeError on every GLONASS CDMA record in a
+                # v3.05+ file. Nothing decoded this path -- it had no
+                # test; the L1OC fixture below now does.
+                geph.dpos[0] = self.flt(line, 1)
+                geph.dpos[1] = self.flt(line, 2)
+                geph.dpos[2] = self.flt(line, 3)
 
                 line = fnav.readline()  # line #8
                 geph.urai[0] = int(self.flt(line, 0))
                 geph.urai[1] = int(self.flt(line, 1))
                 tot = self.flt(line, 2)
 
-        tod = t0 % 86400.0
+        if self.mode_nav == 0:  # FDMA
+            tod = t0 % 86400.0
+        else:
+            # CDMA records carry no message-frame time on the clock
+            # line; t0 was only ever assigned in the FDMA branch, so
+            # this statement raised UnboundLocalError for L1OC/L3OC.
+            # Use the transmission time from line #8 instead (CDMA
+            # records exist only in v3.05+, so tot is always read).
+            tod = tot % 86400.0
         tof = gpst2time(week, tod + dow*86400.0)
         tof = self.adjday(tof, toc)
 

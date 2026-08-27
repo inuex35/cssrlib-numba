@@ -164,6 +164,12 @@ class QualityControlMixin:
                 # leaves nav.slip without a producer, so the reset in
                 # udstate() never fires and the stale ambiguity survives the
                 # slip.
+                # No `continue`: an LLI band still faces the validity
+                # checks below. Skipping them admitted a band with
+                # P = L = 0 whenever the receiver also flagged loss of
+                # lock -- and a zero pseudorange reaches zdres as a
+                # -2e7 m residual that the y == 0 guards downstream
+                # cannot see.
                 if obs.lli[j, f] == 1:
                     rcv.slip[i, f] = 1
                     if self.nav.monlevel > 0:
@@ -171,7 +177,6 @@ class QualityControlMixin:
                                             .format(time2str(obs.t),
                                                     sat2id(sat_i),
                                                     sigsCP[f].str()))
-                    continue
 
                 # Check for measurement consistency
                 #

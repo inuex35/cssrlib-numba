@@ -43,7 +43,9 @@ EPH_FIELDS = ("sat iode iodc sva svh week toe toc ttr A e i0 OMG0 omg M0 deln "
               "OMGd idot crc crs cuc cus cic cis toes fit af0 af1 af2 tgd "
               "tgd_b sid isc mode Adot delnd urai integ wn_op sisai").split()
 GEPH_FIELDS = ("sat iode frq svh sva age toe tof pos vel acc taun gamn dtaun "
-               "mode status flag tau_c dtau_c tau_gps urai").split()
+               "mode status flag tau_c dtau_c tau_gps urai "
+               "sattype src aode aodc tin tau1 tau2 psi sn win dw wmax "
+               "dpos").split()
 SEPH_FIELDS = ("sat t0 toc tof tot sva svh pos vel acc af0 af1 iodn "
                "mode").split()
 PARAM_FIELDS = ("sys mode prm a t0 t_ot t_t t_eop ttr sid").split()
@@ -255,6 +257,24 @@ def write_fixtures():
               _row(1.1e-09, 2.1e-09, 3.1e-09, 4.1e-09),
               _row(5.1e-09, 6.1e-09, 0.0, 0.0),
               _row(43200.0, 2148.0, 1.0, 0.0)]
+    # GLONASS CDMA (L1OC): the nine-line record with the attitude and
+    # antenna-offset block. This path shipped for a long time with
+    # geph.dpoc (a field that does not exist -- AttributeError) and
+    # geph.yaw (a field that does not exist -- psi stayed zero), because
+    # nothing decoded it.
+    lines += [_record("EPH", "R", 5, "L1OC"),
+              _epoch_row("R", 5, -3.1e-05, 1.8e-13, 2.5e-19),
+              _row(1.1234500000e+04, -1.2345000000e+00,
+                   1.5000000000e-06, 0.0),
+              _row(-2.2345600000e+04, 2.2345000000e+00,
+                   -2.5000000000e-06, 1.0),
+              _row(9.8765400000e+03, 3.1415000000e-01,
+                   3.5000000000e-06, 4.5e-09),
+              _row(2.0, 1.0, 7.0, 9.0),
+              _row(1.0, 4.3100e+04, 1.1e-09, 2.2e-09),
+              _row(2.5000e-01, 1.0, 1.3000e-03, 4.4e-06),
+              _row(2.1000e-03, 1.5e-01, 2.5e-01, 3.5e-01),
+              _row(3.0, 4.0, 4.3260e+04, 0.0)]
     _write("rinex400.rnx", lines)
 
 

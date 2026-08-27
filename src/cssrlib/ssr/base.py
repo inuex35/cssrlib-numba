@@ -1295,7 +1295,6 @@ class cssr:
 
 class cssre():
     """ Class to encode the Compact SSR messages (experimental) """
-    monlevel = 0
     dlen = 0
     msgtype = 0
 

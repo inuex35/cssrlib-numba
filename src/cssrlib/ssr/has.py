@@ -88,7 +88,7 @@ class cssr_has(cssr):
         try:
             self.toh, flags, res, mask_id, self.iodssr = \
                 bs.unpack_from('u12u6u4u5u5', msg, i)
-        except:
+        except bs.Error:
             print(f"invalid content={self.msgtype}")
             return False
         i += 32
