@@ -6,23 +6,11 @@ RTKLIB-compatible variants, and fix-and-hold."""
 import numpy as np
 from numba import njit
 
-from cssrlib.gnss import sat2prn, uGNSS, rCST
+from cssrlib.gnss import sat2prn, uGNSS
 from cssrlib.gnss import SAT_SYS_ARR
-from cssrlib.gnss import uTropoModel
 from cssrlib.gnss import time2str
 from cssrlib.core.mlambda import mlambda
 
-# format definition for logging
-fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
-fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f}\n"
-fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
-fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f} {:10.3f}\n"
-
-MIN_SIN_EL = 0.1 * rCST.D2R
-TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
-TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 @njit(cache=True)
 def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,

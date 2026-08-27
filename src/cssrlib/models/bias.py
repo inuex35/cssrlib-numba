@@ -14,11 +14,6 @@ from cssrlib.gnss import rSigRnx, uGNSS, uTYP
 import numpy as np
 
 
-NMAX = 10
-MAXDTE = 900.0
-EXTERR_CLK = 1e-3
-EXTERR_EPH = 5e-7
-
 
 class bias_t():
     def __init__(self, sat: int, tst: gtime_t, ted: gtime_t, sig1: rSigRnx,

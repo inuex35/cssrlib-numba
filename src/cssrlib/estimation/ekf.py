@@ -7,20 +7,8 @@ import numpy as np
 
 from cssrlib.models.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
-from cssrlib.gnss import uTropoModel
 from cssrlib.gnss import time2str, timediff
 
-# format definition for logging
-fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
-fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f}\n"
-fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
-fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f} {:10.3f}\n"
-
-MIN_SIN_EL = 0.1 * rCST.D2R
-TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
-TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 class FilterMixin:
     """Filtering and the epoch driver, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""

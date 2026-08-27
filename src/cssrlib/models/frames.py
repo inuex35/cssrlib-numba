@@ -17,11 +17,6 @@ import numpy as np
 from math import sin, cos
 
 
-NMAX = 10
-MAXDTE = 900.0
-EXTERR_CLK = 1e-3
-EXTERR_EPH = 5e-7
-
 
 def Rx(t):
     ct, st = cos(t), sin(t)
