@@ -56,13 +56,13 @@ destination first.
 | `cssr_pvs.py` | 8 | `ssr/pvs.py` (7) |
 | `cssrlib.py` | 60 | `ssr/base.py` (52), `core/ssr_types.py` (2) |
 | `ephemeris.py` | 18 | `models/ephemeris.py` (8) |
-| `gnss.py` | 101 | `domain/timescale.py` (22), `domain/structs.py` (18), `domain/coords.py` (15), `domain/signal.py` (13), `domain/enums.py` (6), `domain/sat.py` (6) |
+| `gnss.py` | 101 | `domain/timescale.py` (22), `domain/structs.py` (18), `domain/coords.py` (15), `domain/signal.py` (13), `domain/enums.py` (6), `domain/sat.py` (6), `estimation/ekf.py` (1) |
 | `mlambda.py` | 7 | `core/mlambda.py` (7) |
 | `peph.py` | 45 | `models/antenna.py` (11), `models/frames.py` (11), `models/precise.py` (9), `models/bias.py` (7) |
 | `ppp.py` | 14 | `models/frames.py` (8), `models/tides.py` (6) |
 | `ppprtk.py` | 2 | `engine/ppprtk.py` (2) |
-| `pppssr.py` | 22 | `estimation/residuals.py` (5), `estimation/ekf.py` (4), `estimation/ambiguity.py` (4), `engine/gnssobs.py` (3), `estimation/qc.py` (1) |
-| `rinex.py` | 26 | `fileio/reader.py` (7), `fileio/writer.py` (5), `fileio/obs.py` (3), `fileio/clk.py` (2), `fileio/nav.py` (2), `fileio/sync.py` (1) |
+| `pppssr.py` | 22 | `estimation/ekf.py` (5), `estimation/residuals.py` (5), `estimation/ambiguity.py` (4), `engine/gnssobs.py` (3), `estimation/qc.py` (1) |
+| `rinex.py` | 26 | `fileio/reader.py` (7), `fileio/obs.py` (3), `fileio/clk.py` (2), `fileio/nav.py` (2), `fileio/sync.py` (1) |
 | `rtk.py` | 3 | `engine/rtk.py` (2) |
 
 ## Symbols with no counterpart
@@ -78,7 +78,7 @@ apart, so check before concluding a port is unnecessary.
 - `gnss.py`: method `Obs.sort`, function `glo2time`, function `tod2tow`, function `sys2str`, function `sid2prn`, function `deg2dms`, function `ionppp`, function `mapfParam`, function `tropmapfSBAS`, function `atmosParam`, function `tropheightCorr`, function `tropmodelSBAS`, function `load_config`
 - `peph.py`: method `peph.parse_satlist`, method `peph.parse_acclist`, method `peph.parse_sp3`, method `peph.write_sp3`, method `atxdec.readngspcv`, method `biasdec.getdcb`, method `biasdec.getosbstd`
 - `pppssr.py`: class `pppos`, method `pppos.__init__`, method `pppos.sysidx`, method `pppos.base_process`
-- `rinex.py`: method `rnxdec.getSignals`, method `rnxdec.decode_clk`, method `rnxenc.rnx_nav_header`, method `rnxenc.rnx_nav_body`, method `rnxenc.rnx_gnav_body`, method `rnxenc.rnx_snav_body`
+- `rinex.py`: method `rnxdec.getSignals`, method `rnxdec.decode_clk`, class `rnxenc`, method `rnxenc.__init__`, method `rnxenc.rnx_nav_header`, method `rnxenc.rnx_obs_header`, method `rnxenc.rnx_obs_body`, method `rnxenc.rnx_nav_body`, method `rnxenc.rnx_gnav_body`, method `rnxenc.rnx_snav_body`
 - `rtk.py`: method `rtkpos.base_process`
 
 ## Per-symbol lookup
