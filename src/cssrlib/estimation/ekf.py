@@ -57,8 +57,21 @@ class FilterMixin:
                 sys_i, _ = sat2prn(sat_)
 
                 self.nav.outc[i, f] += 1
-                reset = (self.nav.outc[i, f] >
-                         self.nav.maxout or np.any(self.nav.edt[i, :] > 0))
+                # A cycle slip must reset the ambiguity too. qcedit stopped
+                # raising edt for LLI / GF slips -- an LLI is a slip
+                # notification, not a bad observation, so dropping the
+                # measurement was wrong -- and records nav.slip instead
+                # (see ReceiverState.slip: "Cleared by udstate after the
+                # reset is applied"). Nothing here read it, so on the PPP /
+                # PPP-RTK path the pre-slip ambiguity survived the slip and
+                # quietly poisoned the filter.
+                #
+                # Per band, because that is how the flags are recorded: LLI
+                # is per band, and the GF detector, which cannot attribute
+                # the jump, already raises both bands itself.
+                reset = (self.nav.outc[i, f] > self.nav.maxout
+                         or np.any(self.nav.edt[i, :] > 0)
+                         or self.nav.slip[i, f] > 0)
                 if sys_i not in obs.sig.keys():
                     continue
 
@@ -71,6 +84,7 @@ class FilterMixin:
                 if reset and self.nav.x[j] != 0.0:
                     self.initx(0.0, 0.0, j)
                     self.nav.outc[i, f] = 0
+                    self.nav.slip[i, f] = 0
 
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
