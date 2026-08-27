@@ -129,3 +129,74 @@ def test_dd_exposes_masks_consistent_with_obs_sd():
                 assert dd['obs_sd'].L[k, f] == 0.0, (
                     f"{sat2id(sat[k])} band {f} is masked but survived in "
                     f"obs_sd")
+
+
+def test_band_plan_judgment_keeps_a_satellite_missing_a_band_it_never_sends():
+    """sat_band_plan=True: judged over transmitted bands, strict within.
+
+    The bundled file is GPS L1/L2 and every satellite transmits both, so a
+    synthetic L2 blackout stands in for a pre-IIF satellite's missing L5:
+    zero G28's L2 for the whole run-up so band_seen never records it, then
+    check the gate keeps the satellite on its L1 while the default policy
+    would have dropped it.
+    """
+    import numpy as np
+    from cssrlib.gnss import sat2id
+    from cssrlib.models.ephemeris import satposs
+    from cssrlib.test.golden_harness import setup
+
+    target = next(s for s in range(1, 33) if sat2id(s) == "G28")
+
+    def run(policy):
+        dec, decb, rtk = setup()
+        rtk.nav.sat_band_plan = policy
+        kept = []
+        for _ in range(3):
+            obs = dec.decode_obs()
+            decb.decode_obs()
+            i = list(obs.sat).index(target)
+            obs.L[i, 1] = 0.0
+            obs.P[i, 1] = 0.0
+            obs.S[i, 1] = 0.0
+            rs, vs, dts, svh, _ = satposs(obs, rtk.nav)
+            sat_ed = rtk.qcedit(obs, rs, dts, svh)
+            kept.append(target in sat_ed)
+        return kept, rtk.nav.rcv.edt[target - 1].copy(), \
+            rtk.nav.rcv.band_seen[target - 1].copy()
+
+    kept, edt, seen = run(True)
+    assert all(kept), "never-transmitted band must not drop the satellite"
+    assert bool(seen[0]) and not bool(seen[1])
+    assert edt[0] == 0 and edt[1] == 1, (
+        "the untransmitted band must read as edited to every consumer")
+
+    kept_strict, _, _ = run(False)
+    assert not any(kept_strict), (
+        "the default policy changed: a missing selected band no longer "
+        "drops the satellite even with sat_band_plan off")
+
+
+def test_band_plan_judgment_still_drops_a_degraded_transmitter():
+    """A satellite that HAS shown the band and then fails it stays out.
+
+    G01 transmits L2 (values present) below cnr_min: transmission evidence
+    exists, so the judgment set includes L2 and the strict gate drops the
+    satellite under either policy. This is the population whose admission
+    collapsed the tokyo pipeline; band_plan must not readmit it.
+    """
+    from cssrlib.gnss import sat2id
+    from cssrlib.models.ephemeris import satposs
+    from cssrlib.test.golden_harness import setup
+
+    dec, decb, rtk = setup()
+    rtk.nav.sat_band_plan = True
+    obs = dec.decode_obs()
+    decb.decode_obs()
+    rs, vs, dts, svh, _ = satposs(obs, rtk.nav)
+    sat_ed = rtk.qcedit(obs, rs, dts, svh)
+
+    g01 = next(int(s) for s in obs.sat if sat2id(s) == "G01")
+    assert bool(rtk.nav.rcv.band_seen[g01 - 1, 1]), (
+        "G01's L2 carries values; it must count as transmitted")
+    assert g01 not in sat_ed, (
+        "a transmitted-but-degraded band must still drop the satellite")

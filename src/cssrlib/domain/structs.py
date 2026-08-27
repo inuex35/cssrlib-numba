@@ -293,6 +293,22 @@ class ProcConfig():
         self.monlevel = 1
         self.cnr_min = 25
         self.cnr_min_gpy = 15
+        # Judge each satellite over the bands it actually transmits.
+        #
+        # The gate always judges over the bands the system selected; with
+        # this False (the default) a satellite missing one of them -- a
+        # pre-IIF GPS that carries no L5, a BeiDou-2 that carries only
+        # B1I -- is dropped outright, all session. On tokyo run2 that
+        # discards 19 of 47 satellites structurally, among them a 91%-
+        # present, 48 dB-Hz GPS. With True, the judgment set per satellite
+        # is the selected bands it has ever produced this session
+        # (ReceiverState.band_seen); WITHIN that set the gate stays
+        # strict, so a satellite whose transmitted band degrades is
+        # dropped exactly as before. 2026-07 measured admitting these
+        # populations harmful on that estimator ("L5-less GPS / B1I-only
+        # BDS-2 poison the urban float"); this flag exists so the current
+        # estimator can measure it again rather than inherit the verdict.
+        self.sat_band_plan = False
         self.maxout = 5  # maximum outage [epochs]
 
         self.excl_sat = []   # Excluded satellites
@@ -362,6 +378,14 @@ class ReceiverState():
         # Cleared by udstate after the reset is applied.
         self.slip = np.zeros((uGNSS.MAXSAT, nf), dtype=int)
 
+        # Which selected bands this satellite has ever produced (L and P
+        # both nonzero at least once this session), per receiver. This is
+        # the observable proxy for the satellite's signal plan: a Block
+        # IIR GPS never shows L5, a BeiDou-2 never shows B1C/B2a. Sticky
+        # for the session -- a band once seen stays seen -- so a tracking
+        # dropout does not masquerade as "not transmitted".
+        self.band_seen = np.zeros((uGNSS.MAXSAT, nf), dtype=bool)
+
         # geometry-free combination for cycle-slip detection, this
         # receiver's own. There used to be a second table, gf_r, because one
         # Nav had to hold the base's as well.
@@ -417,7 +441,7 @@ _NAV_FIELDS = {
             "sig_p0", "sig_v0", "sig_ztd0", "sig_ion0", "sig_n0",
             "sig_qp", "sig_qv", "sig_qztd", "sig_qion", "sig_qb",
             "maxtdiff", "rtklib_mode", "arfilter",
-            "minfixsats"),
+            "minfixsats", "sat_band_plan"),
     "rcv": ("fix", "edt", "outc", "vsat", "lock", "slip", "gf",
             "excsat", "prev_ratio1", "prev_ratio2",
             "el", "phw", "sat", "t", "tt", "smode", "nsat"),

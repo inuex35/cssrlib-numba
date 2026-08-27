@@ -135,6 +135,13 @@ class QualityControlMixin:
             sigsCP = obs.sig[sys_i][uTYP.L]
             sigsCN = obs.sig[sys_i][uTYP.S]
 
+            # Record which bands this satellite demonstrably transmits
+            # before any editing: L and P both present is transmission
+            # evidence regardless of what the quality tests make of it.
+            for f in range(min(self.nav.nf, obs.L.shape[1])):
+                if obs.L[j, f] != 0.0 and obs.P[j, f] != 0.0:
+                    rcv.band_seen[sat_i - 1, f] = True
+
             # Loop over signals
             #
             for f in range(self.nav.nf):
@@ -275,7 +282,19 @@ class QualityControlMixin:
             # is equivalent for satellites that survive and exact for the
             # uncarried slots of mixed-nf systems.
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
-            if nf_sys <= 0 or np.any(rcv.edt[i, :nf_sys] > 0):
+            if nf_sys <= 0:
+                rcv.edt[i, :] = 1
+                continue
+            judged = np.ones(nf_sys, dtype=bool)
+            if self.nav.sat_band_plan:
+                # Judge over the bands this satellite transmits (see
+                # ProcConfig.sat_band_plan). A band it has never produced
+                # is not a failure, exactly as a band its system never
+                # selected is not one; within the transmitted set the
+                # strict gate below applies unchanged.
+                judged = rcv.band_seen[sat_i - 1, :nf_sys].copy()
+                rcv.edt[i, :nf_sys][~judged] = 1   # unusable, not failed
+            if not judged.any() or np.any(rcv.edt[i, :nf_sys][judged] > 0):
                 rcv.edt[i, :] = 1
                 continue
 
