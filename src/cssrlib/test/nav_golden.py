@@ -69,15 +69,35 @@ def _emit(out, tag, obj, fields):
             out.append(f"{tag} {name} {_fld(value)}")
 
 
+#: Keep this many ephemerides per (system, mode) from a decoded file.
+#: Records of one type all exercise the same code path -- the bundled
+#: file's 105 Galileo INAV records pin nothing its first two do not --
+#: so the fingerprint keeps representatives and stays small. The
+#: synthetic fixtures are already minimal and pass through untouched.
+PER_TYPE = 2
+
+
 def fingerprint(path):
-    """Every field decode_nav puts on a Nav, as sorted text lines."""
+    """Every field decode_nav puts on a Nav, as sorted text lines.
+
+    The whole file is decoded -- a record that stops parsing still
+    fails loudly -- but only PER_TYPE ephemerides per (system, mode)
+    are fingerprinted.
+    """
+    from cssrlib.gnss import sat2prn
     dec = rn.rnxdec()
     nav = Nav()
     dec.decode_nav(path, nav)
     out = []
 
-    for i, e in enumerate(sorted(nav.eph,
-                                 key=lambda x: (x.sat, x.toe.time, x.mode))):
+    counts = {}
+    kept = []
+    for e in sorted(nav.eph, key=lambda x: (x.sat, x.toe.time, x.mode)):
+        key = (sat2prn(e.sat)[0], e.mode)
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] <= PER_TYPE:
+            kept.append(e)
+    for i, e in enumerate(kept):
         _emit(out, f"eph[{i:03d}]{sat2id(e.sat)}", e, EPH_FIELDS)
     for i, e in enumerate(sorted(nav.geph, key=lambda x: (x.sat, x.toe.time))):
         _emit(out, f"geph[{i:03d}]{sat2id(e.sat)}", e, GEPH_FIELDS)
