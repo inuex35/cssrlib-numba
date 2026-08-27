@@ -150,15 +150,6 @@ class cnav_msg():
     def load_gmat(self, file_gm):
         self.gMat = np.genfromtxt(file_gm, dtype="u1", delimiter=",")
 
-    def decode_has_header(self, buff, i):
-        """ decode header of HAS pages (obsoleted) """
-        if bs.unpack_from('u24', buff, i)[0] == 0xaf3bc3:
-            return 0, 0, 0, 0, 0
-
-        hass, res, mt, mid, ms, pid = bs.unpack_from('u2u2u2u5u5u8', buff, i)
-        ms += 1
-        return hass, mt, mid, ms, pid
-
     def decode_has_page(self, idx, has_pages, gMat, ms):
         """ HPVRS decoding for RS(255,32,224) """
         HASmsg = bytes()

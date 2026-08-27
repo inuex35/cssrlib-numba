@@ -3,7 +3,7 @@
 Thin wrappers over the Numba kernels in geometry / atmosphere, plus DOP and
 ionospheric pierce-point geometry."""
 
-from math import floor, sin, cos, sqrt, asin, fabs, tan
+from math import sin, cos, sqrt
 import numpy as np
 import bitstruct.c as bs
 
@@ -116,46 +116,6 @@ def pos2ecef(pos, isdeg: bool = False):
 def ecef2enu(pos, r):
     """ relative ECEF to ENU conversion """
     return _geom_fast.ecef2enu(_ensure_vec(pos), _ensure_vec(r))
-
-
-def deg2dms(deg):
-    """ convert from deg to dms """
-    if deg < 0.0:
-        sign = -1
-    else:
-        sign = 1
-    a = fabs(deg)
-    dms = np.zeros(3)
-    dms[0] = floor(a)
-    a = (a-dms[0])*60.0
-    dms[1] = floor(a)
-    a = (a-dms[1])*60.0
-    dms[2] = a
-    dms[0] *= sign
-    return dms
-
-
-def ionppp(pos, az, el, re, hion):
-    """ ionospheric pierce point (ipp) position and slant factor """
-
-    rp = re/(re+hion)*cos(el)
-    ap = rCST.HALFPI-el-asin(rp)
-    sinap = sin(ap)
-    tanap = tan(ap)
-    cosaz = cos(az)
-
-    posp = [0.0, 0.0]
-    posp[0] = asin(sin(pos[0])*cos(ap)+cos(pos[0])*sinap*cosaz)
-
-    if (pos[0] > 70.0*rCST.D2R and tanap*cosaz > tan(rCST.HALFPI-pos[0])) or \
-       (pos[0] < -70.0*rCST.D2R and -tanap*cosaz > tan(rCST.HALFPI+pos[0])):
-        posp[1] = pos[1] + rCST.PI-asin(sinap*sin(az)/cos(posp[0]))
-    else:
-        posp[1] = pos[1] + asin(sinap*sin(az)/cos(posp[0]))
-
-    sf = 1.0/sqrt(1.0-rp*rp)
-
-    return sf, posp
 
 
 def satazel(pos, e):
