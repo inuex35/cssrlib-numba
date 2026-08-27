@@ -79,12 +79,7 @@ class StateLayout:
 
     # -- individual indices ---------------------------------------------
     def tropo(self, na=None):
-        """Index of the zenith tropospheric delay.
-
-        The old formula was ``na - MAXSAT - 1``, which silently assumed the
-        ionospheric block was present and full length; with tropo estimated
-        but iono not, it addressed off the front of the vector.
-        """
+        """Index of the zenith tropospheric delay."""
         na = self.na if na is None else na
         return na - self.niono - self.ntrop
 

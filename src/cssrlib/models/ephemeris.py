@@ -70,11 +70,7 @@ def dtadjust(t1, t2, tw=604800):
 def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=1.0):
     """ calculate GLONASS satellite position based on ephemeris
 
-    The RK4 integration itself lives in :mod:`cssrlib.models.glonass`, which
-    compiles it with Numba. This module used to carry a second, pure-Python
-    copy of the same integrator and call that instead, so every GLONASS
-    satellite of every epoch ran the slow one -- 40x, measured over a 900 s
-    propagation -- while the compiled kernel sat unreferenced.
+    The RK4 integration lives in :mod:`cssrlib.models.glonass` (Numba).
     """
     t = timediff(time, geph.toe)
     rs, vs, dts = propagate_glonass(t, geph.pos, geph.vel, geph.acc,
@@ -208,8 +204,12 @@ def satposs(obs, nav, cs=None, orb=None):
         if sys not in obs.sig.keys():
             continue
 
-        pr = obs.P[i, 0]  # TODO: catch invalid observation!
-        t = timeadd(obs.t, -pr/rCST.CLIGHT)
+        # Signal flight time from the first band carrying a code
+        # observation (band 0 may be absent).
+        prv = obs.P[i][obs.P[i] != 0.0]
+        if prv.size == 0:
+            continue
+        t = timeadd(obs.t, -prv[0]/rCST.CLIGHT)
 
         if nav.ephopt == 4:
 
@@ -391,12 +391,16 @@ def satposs(obs, nav, cs=None, orb=None):
                 nav.dorb[sat] = dorb_
                 nav.dclk[sat] = dclk
 
-            elif nav.smode == 1 and nav.nf == 1:  # stand-alone positioning
+            elif nav.smode == 1 and nav.nf == 1 and sys != uGNSS.GLO:
+                # stand-alone positioning (GLONASS carries no eph/tgd here)
                 dts[i] -= eph.tgd
 
             nsat += 1
 
-    if cs is not None:
+    if cs is not None and n > 0:
+        # Remember this batch's ORBIT-correction epoch (read above when
+        # differencing sis), taken from the last listed satellite.
+        sat = obs.sat[n-1]
         if sat in cs.lc[0].t0 and sCType.ORBIT in cs.lc[0].t0[sat]:
             nav.time_p = cs.lc[0].t0[sat][sCType.ORBIT]
 

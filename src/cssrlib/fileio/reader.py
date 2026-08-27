@@ -149,7 +149,7 @@ class rnxdec(NavFileMixin, ObsFileMixin, ClockFileMixin):
         """ convert string to float """
         if c >= 0:
             u = u[19*c+4:19*(c+1)+4]
-        if u.isspace():
+        if not u.strip():  # blank or sliced past a short line's end
             return 0.0
         return float(u.replace("D", "E"))
 

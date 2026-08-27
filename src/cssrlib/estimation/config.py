@@ -2,10 +2,7 @@
 
 An RTK session and a PPP-RTK session differ in *settings*, not in kind:
 which corrections apply, which states are estimated, how aggressive the
-ambiguity resolver is. That difference used to be expressed by subclassing
-the engine, which is what let ``rtkpos`` override ``base_process`` with a
-return contract its parent did not expect -- a Liskov violation that showed
-up as a singular matrix rather than as a type error.
+ambiguity resolver is.
 
 Each factory here returns a fully populated :class:`~cssrlib.gnss.ProcConfig`.
 Pass one to the engine instead of picking a subclass.
@@ -35,11 +32,7 @@ def _apply(cfg, overrides):
 
 
 def base_config(nf=2, pmode=1, **overrides):
-    """The engine's own defaults, shared by every mode.
-
-    These are the values ``gnssobs.__init__`` used to assign to ``nav``
-    directly, before any subclass got a chance to change them.
-    """
+    """The engine's own defaults, shared by every mode."""
     cfg = ProcConfig(nf=nf)
 
     cfg.pmode = pmode

@@ -96,6 +96,8 @@ class peph:
         for i in range(3):
             rs[i] = self.interppol(t, p[i, :], NMAX+1)
 
+        if index+1 >= nav.ne:  # keep the pair inside the table
+            index = nav.ne-2
         p_ = nav.peph[index:index+2]
 
         if vare:
@@ -114,6 +116,7 @@ class peph:
 
         c = [p_[0].pos[sat-1, 3], p_[1].pos[sat-1, 3]]
 
+        std = 0.0
         if t[0] <= 0.0:
             dts[0] = c[0]
             if dts[0] != 0.0:
@@ -122,7 +125,7 @@ class peph:
             dts[0] = c[1]
             if dts[0] != 0.0:
                 std = p_[1].std[sat-1, 3]*rCST.CLIGHT-EXTERR_CLK*t[1]
-        elif c[0] != np.nan and c[1] != np.nan:
+        elif not np.isnan(c[0]) and not np.isnan(c[1]):
             dts[0] = (c[1]*t[0]-c[0]*t[1])/(t[0]-t[1])
             i = 0 if t[0] < -t[1] else 1
             std = p_[i].std[sat-1, 3]+EXTERR_CLK*abs(t[i])
@@ -150,6 +153,8 @@ class peph:
             else:
                 j = k
         index = 0 if i <= 0 else i-1
+        if index+1 >= nav.nc:  # keep the pair inside the table
+            index = nav.nc-2
         p_ = nav.pclk[index:index+2]
 
         t[0] = timediff(time, p_[0].time)
@@ -205,7 +210,7 @@ class peph:
         #
         time_tt = timeadd(time, tt)
         rst, dtst, _, _ = self.pephpos(time_tt, sat, nav)
-        if rss is None:
+        if rst is None:
             return None, None, False
 
         # Get clock offset from Clock-RINEX

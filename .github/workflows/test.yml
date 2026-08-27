@@ -64,6 +64,29 @@ jobs:
       - name: Run tests
         run: pip install pytest && pytest src/cssrlib/test -q
 
+      # The same suite, from the installed distribution and outside the
+      # repository -- catches data files missing from the package.
+      - name: Run tests from the installed distribution
+        run: |
+          cd "$RUNNER_TEMP"
+          pytest "$(python -c 'import cssrlib,os;print(os.path.dirname(cssrlib.__file__))')/test" -q
+
+  upstream-map:
+    name: upstream map is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The baseline is a pinned upstream commit; a default checkout has
+      # only the PR head, so fetch it from the upstream repo by SHA --
+      # this works from any fork's clone.
+      - name: Fetch the pinned upstream baseline
+        run: |
+          sha=$(python -c "import re;print(re.search(r'DEFAULT_UPSTREAM = \"([0-9a-f]{40})\"', open('ci/upstream_map.py').read()).group(1))")
+          git fetch --depth=1 https://github.com/hirokawa/cssrlib.git "$sha"
+
+      - run: python ci/upstream_map.py --check
+
   examples:
     name: examples import
     runs-on: ubuntu-latest

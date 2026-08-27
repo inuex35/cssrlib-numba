@@ -208,7 +208,12 @@ def _sdres_build_plan(obs, sat, el, y, nav):
                     continue
 
                 if sys == uGNSS.GLO:
-                    freq = sig.frequency(nav.glo_ch[sat_id])
+                    # .get: a GLONASS satellite can pass qcedit with its
+                    # FCN still unknown (no ephemeris decoded yet).
+                    ch = nav.glo_ch.get(sat_id)
+                    if ch is None:
+                        continue
+                    freq = sig.frequency(ch)
                 else:
                     freq = sig.frequency()
                 mu = -(freq0/freq)**2 if is_phase else +(freq0/freq)**2
@@ -216,8 +221,11 @@ def _sdres_build_plan(obs, sat, el, y, nav):
                 if is_phase:
                     ref_sat_id = int(sat_array[ref_pos])
                     if sys == uGNSS.GLO:
-                        lam_ref = sig.wavelength(nav.glo_ch[ref_sat_id])
-                        lam_sat = sig.wavelength(nav.glo_ch[sat_id])
+                        ch_ref = nav.glo_ch.get(ref_sat_id)
+                        if ch_ref is None:
+                            continue
+                        lam_ref = sig.wavelength(ch_ref)
+                        lam_sat = sig.wavelength(ch)
                     else:
                         lam_ref = sig.wavelength()
                         lam_sat = lam_ref
@@ -359,10 +367,11 @@ class ObservationModelMixin:
             # Wavelength
             #
             if sys == uGNSS.GLO:
-                lam = np.array([s.wavelength(self.nav.glo_ch[sat])
-                                for s in sigsCP])
-                frq = np.array([s.frequency(self.nav.glo_ch[sat])
-                               for s in sigsCP])
+                ch = self.nav.glo_ch.get(sat)
+                if ch is None:  # FCN unknown: no ephemeris decoded yet
+                    continue
+                lam = np.array([s.wavelength(ch) for s in sigsCP])
+                frq = np.array([s.frequency(ch) for s in sigsCP])
             else:
                 lam = np.array([s.wavelength() for s in sigsCP])
                 frq = np.array([s.frequency() for s in sigsCP])
@@ -604,22 +613,20 @@ class ObservationModelMixin:
 
         mode = 1 if len(y) == ns else 0  # 0:DD,1:SD
 
-        # v / H / Ri / Rj / nb are all allocated and filled by _sdres_core
-        # below, sized from the measurement plan rather than the ns*nf*2
-        # upper bound the scalar loop used to need.
+        # v / H / Ri / Rj / nb are allocated and filled by _sdres_core,
+        # sized from the measurement plan.
 
         # Geodetic position
         #
         pos = ecef2pos(x[0:3])
         pos_arr = np.asarray(pos, dtype=np.float64)
         doy = time2doy(obs.t)
-        mapfh_sd = np.zeros(ns, dtype=np.float64)
+        # Wet mapping only: it scales the estimated ZTD.
         mapfw_sd = np.zeros(ns, dtype=np.float64)
         for idx_sat in range(ns):
             if el[idx_sat] <= 0.0:
                 continue
-            mf, mw = _tropmapf_dispatch_ppp(float(doy), pos_arr, float(el[idx_sat]), int(self.nav.trpModel))
-            mapfh_sd[idx_sat] = mf
+            _, mw = _tropmapf_dispatch_ppp(float(doy), pos_arr, float(el[idx_sat]), int(self.nav.trpModel))
             mapfw_sd[idx_sat] = mw
 
         (

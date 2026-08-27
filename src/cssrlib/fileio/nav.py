@@ -367,8 +367,8 @@ class NavFileMixin:
                 if len(line) >= 80:
                     geph.svh = int(self.flt(line, 3))
             else:  # L1OC,L3OC
-                sattype = int(self.flt(line, 0))
-                src = int(self.flt(line, 1))
+                geph.sattype = int(self.flt(line, 0))
+                geph.src = int(self.flt(line, 1))
                 geph.aode = int(self.flt(line, 2))
                 geph.aodc = int(self.flt(line, 3))
 
@@ -379,23 +379,26 @@ class NavFileMixin:
                 geph.tau2 = self.flt(line, 3)
 
                 line = fnav.readline()  # line #6
-                geph.yaw = self.flt(line, 0)
+                geph.psi = self.flt(line, 0)  # yaw angle [rad]
                 geph.sn = int(self.flt(line, 1))
                 geph.win = self.flt(line, 2)
                 geph.dw = self.flt(line, 3)
 
                 line = fnav.readline()  # line #7
                 geph.wmax = self.flt(line, 0)
-                geph.dpoc[0] = self.flt(line, 1)
-                geph.dpoc[1] = self.flt(line, 2)
-                geph.dpoc[2] = self.flt(line, 3)
+                geph.dpos[0] = self.flt(line, 1)
+                geph.dpos[1] = self.flt(line, 2)
+                geph.dpos[2] = self.flt(line, 3)
 
                 line = fnav.readline()  # line #8
                 geph.urai[0] = int(self.flt(line, 0))
                 geph.urai[1] = int(self.flt(line, 1))
                 tot = self.flt(line, 2)
 
-        tod = t0 % 86400.0
+        if self.mode_nav == 0:  # FDMA: message-frame time from line #0
+            tod = t0 % 86400.0
+        else:  # CDMA: transmission time from line #8
+            tod = tot % 86400.0
         tof = gpst2time(week, tod + dow*86400.0)
         tof = self.adjday(tof, toc)
 

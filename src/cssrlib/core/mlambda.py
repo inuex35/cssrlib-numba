@@ -211,14 +211,9 @@ def _msearch(L, d, ahat, ncands):
 def _estimILS(L, d, ahat, ncands):
     n = d.size
     Chi2 = 1e18
-    # RTKLIB lambda.c LOOPMAX. The MLAMBDA tree walk normally finishes
-    # in <LOOPMAX iterations on a well-conditioned Q, but with a
-    # poorly-conditioned float covariance (large d entries) the search
-    # can spawn a near-unbounded number of branches. RTKLIB exits with
-    # "search loop overflow" at 10000; do the same here so a bad epoch
-    # costs ~10 ms instead of tens of seconds. sqnorm is pre-filled
-    # with 1e18 so an early abort registers as "no fix" via the
-    # downstream `s[1]/s[0] >= thresar` check (1e18/1e18 = 1.0 < 3.0).
+    # RTKLIB lambda.c LOOPMAX: bound the tree walk on an
+    # ill-conditioned Q. sqnorm is pre-filled with 1e18 so an early
+    # abort reads as "no fix" in the downstream ratio test.
     LOOPMAX = 10000
     loop_count = 0
     aborted = False
@@ -432,29 +427,8 @@ def mlambda(ahat, Qahat, ncands=2, parmode=1, P0=0.995):
     elif parmode == 2:  # PAR
         zpar, s, Qzpar, Zpar, Ps, nfix, zfix = parsearch(zhat, Qzhat, Z, L, d,
                                                          Ps, P0, ncands)
-    elif parmode == 3:
-
-        # zfix, s = estimILS(L, d, zhat, ncands)
-        zfix, s = msearch(L, d, zhat, ncands)
-        nfix = len(zhat)
-
-        thresar = 2.0
-        ratio = s[1]/s[0]
-
-        if ratio < thresar:
-
-            for k in range(len(zhat)):
-                d_ = np.delete(d, k)
-                L_ = np.delete(np.delete(L, k, 0), k, 1)
-                zhat_ = np.delete(zhat, k)
-
-                zfix_, s = msearch(L_, d_, zhat_, ncands)
-                # zfix, s = estimILS(L_, d_, zhat_, ncands)
-                ratio = s[1]/s[0]
-                if ratio >= thresar:
-                    break
-
-        nfix = len(zhat)-1
+    else:
+        raise ValueError(f"unsupported parmode {parmode}")
 
     afix_ = iZt@zfix
     return afix_, s, nfix, Ps

@@ -40,9 +40,8 @@ class FilterMixin:
 
         # Process noise
         #
-        dP = np.diag(self.nav.P)
-        dP.flags['WRITEABLE'] = True
-        dP[0:self.nav.nq] += self.nav.q[0:self.nav.nq]*tt
+        dP = np.einsum('ii->i', self.nav.P)  # writable diagonal view
+        dP[0:self.nav.nq] += self.nav.q[0:self.nav.nq]*abs(tt)
 
         # Update Kalman filter state elements
         #
@@ -57,18 +56,8 @@ class FilterMixin:
                 sys_i, _ = sat2prn(sat_)
 
                 self.nav.outc[i, f] += 1
-                # A cycle slip must reset the ambiguity too. qcedit stopped
-                # raising edt for LLI / GF slips -- an LLI is a slip
-                # notification, not a bad observation, so dropping the
-                # measurement was wrong -- and records nav.slip instead
-                # (see ReceiverState.slip: "Cleared by udstate after the
-                # reset is applied"). Nothing here read it, so on the PPP /
-                # PPP-RTK path the pre-slip ambiguity survived the slip and
-                # quietly poisoned the filter.
-                #
-                # Per band, because that is how the flags are recorded: LLI
-                # is per band, and the GF detector, which cannot attribute
-                # the jump, already raises both bands itself.
+                # Reset the ambiguity on outage, edit or cycle slip
+                # (nav.slip, per band; cleared below once applied).
                 reset = (self.nav.outc[i, f] > self.nav.maxout
                          or self.nav.edt[i, f] > 0
                          or self.nav.slip[i, f] > 0)
@@ -239,6 +228,23 @@ class FilterMixin:
         S (ndarray): Innovation covariance matrix
         """
 
+        # Update only states with initialized covariance: for the rest
+        # P's row and column are zero, so their gain is zero and they
+        # contribute nothing to S. Reduces the Joseph update from nx
+        # (hundreds, mostly never-initialized ambiguities) to the
+        # states actually in use.
+        act = np.flatnonzero(np.diag(P) > 0.0)
+        if act.size < P.shape[0]:
+            H_ = H[:, act]
+            P_ = P[np.ix_(act, act)]
+            PHt = P_@H_.T
+            S = H_@PHt+R
+            K = PHt@np.linalg.inv(S)
+            x[act] += K@v
+            IKH = np.eye(act.size)-K@H_
+            P[np.ix_(act, act)] = IKH@P_@IKH.T + K@R@K.T
+            return x, P, S
+
         PHt = P@H.T
         S = H@PHt+R
         K = PHt@np.linalg.inv(S)
@@ -252,10 +258,9 @@ class FilterMixin:
     def valpos(self, v, R, thres=4.0):
         """Post-fit residual MONITOR — always returns True.
 
-        Deliberate: enabling the rejection was part of the tokyo
-        regression matrix and measured worse, so this logs offending
-        residuals (monlevel > 1) without vetoing the solution. Callers
-        treating the return as a gate get a constant-True gate.
+        Logs offending residuals (monlevel > 1) without vetoing the
+        solution; callers treating the return as a gate get a
+        constant-True gate.
         """
         nv = len(v)
         fact = thres**2

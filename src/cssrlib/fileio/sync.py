@@ -9,8 +9,7 @@ def sync_obs(dec, decb, dt_th=0.1):
     """ sync observation between rover and base.
 
     Returns the EOF sentinel (default Obs, t == 0) for a stream that
-    ran out — previously that sentinel made ``dt`` a huge negative
-    number and this loop never terminated.
+    ran out.
     """
     obs = dec.decode_obs()
     obsb = decb.decode_obs()

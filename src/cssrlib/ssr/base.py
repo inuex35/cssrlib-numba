@@ -161,11 +161,8 @@ class sSigIRN(IntEnum):
 
 
 
-# The Compact-SSR signal number to RINEX signal mapping, per constellation.
-# These eight dictionaries used to be literals inside cssr.ssig2rsig, so a
-# call rebuilt all of them before doing one lookup -- 2.7 us to answer a
-# question that is a dict index, on a method called once per satellite per
-# signal while decoding a mask.
+# Compact-SSR signal number to RINEX signal mapping, per constellation
+# (module level so ssig2rsig is a dict lookup).
 
 gps_tbl = {
     sSigGPS.L1C: uSIG.L1C,
@@ -1295,7 +1292,6 @@ class cssr:
 
 class cssre():
     """ Class to encode the Compact SSR messages (experimental) """
-    monlevel = 0
     dlen = 0
     msgtype = 0
 

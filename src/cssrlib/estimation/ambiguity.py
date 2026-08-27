@@ -9,7 +9,7 @@ from numba import njit
 from cssrlib.gnss import sat2prn, uGNSS
 from cssrlib.gnss import SAT_SYS_ARR
 from cssrlib.gnss import time2str
-from cssrlib.core.mlambda import mlambda
+from cssrlib.core.mlambda import LambdaError, mlambda
 
 
 @njit(cache=True)
@@ -273,8 +273,11 @@ class AmbiguityMixin:
             return 0, None
 
         # The search itself is engine-free; this method is its nav adapter.
-        sol = solve_dd_ambiguities(self.nav.x, self.nav.P, ix, na, nx,
-                                   parmode, P0, self.nav.thresar)
+        try:
+            sol = solve_dd_ambiguities(self.nav.x, self.nav.P, ix, na, nx,
+                                       parmode, P0, self.nav.thresar)
+        except LambdaError:  # Qb not positive definite: no fix this epoch
+            return 0, None
         self._last_s0 = sol.s0
         self._last_s1 = sol.s1
         if sol.accepted:
@@ -283,7 +286,7 @@ class AmbiguityMixin:
             xa = self.restamb(sol.bias, ix)
         elif parmode == 2 and sol.nfix == 0:
             nb = 0
-            if self.nav.monlevel > 0:
+            if self.nav.monlevel > 0 and self.nav.fout is not None:
                 self.nav.fout.write(
                     "{:s}  Ps={:3.2f} nfix={:d}\n".
                     format(time2str(self.nav.t), sol.ps, sol.nfix))
@@ -427,6 +430,10 @@ class AmbiguityMixin:
             return nb_full, xa_full
 
         best_nb, best_xa, best_ratio = nb_full, xa_full, ratio_full
+        # resamb_lambda rewrites nav.fix / xa / Pa on every attempt, so
+        # the adopted candidate's copies are restored after the loop.
+        best_state = (self.nav.fix.copy(), self.nav.xa.copy(),
+                      self.nav.Pa.copy())
 
         # Subsets always keep the GPS + GAL + QZS core (most reliable
         # in tokyo-class urban multipath).
@@ -461,8 +468,13 @@ class AmbiguityMixin:
                     continue
                 if ratio_s > best_ratio:
                     best_nb, best_xa, best_ratio = nb_s, xa_s, ratio_s
+                    best_state = (self.nav.fix.copy(), self.nav.xa.copy(),
+                                  self.nav.Pa.copy())
         finally:
             self.nav.vsat[:, :] = vsat_snapshot
+        self.nav.fix[:, :] = best_state[0]
+        self.nav.xa = best_state[1]
+        self.nav.Pa = best_state[2]
 
         # Stash the adopted subset's pseudo-ratio into _last_s0/_last_s1
         # so downstream callers reading the ratio see the chosen value.

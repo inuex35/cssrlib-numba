@@ -98,6 +98,14 @@ class ObsFileMixin:
 
             nsat = int(line[32:35])
 
+            # Epoch flag (col 32): 2-5 mark event records whose nsat
+            # lines are header-style records, not observations.
+            flag = int(line[31]) if line[31].isdigit() else 0
+            if flag >= 2:
+                for _ in range(nsat):
+                    self.fobs.readline()
+                continue
+
             year = int(line[2:6])
             month = int(line[7:9])
             day = int(line[10:12])
@@ -164,7 +172,9 @@ class ObsFileMixin:
                     # Convert from string to numerical value
                     #
                     val = 0.0 if not sval else float(sval)
-                    lli = 1 if slli == '1' else 0
+                    # LLI is a bit field: b0 = cycle slip, b1 =
+                    # half-cycle ambiguity, b2 = anti-spoofing.
+                    lli = int(slli) & 3 if slli.isdigit() else 0
 
                     # Signal index in data structure
                     #

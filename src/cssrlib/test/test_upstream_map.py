@@ -23,6 +23,12 @@ ROOT = os.path.dirname(os.path.dirname(SRC))
 MAP = os.path.join(ROOT, "UPSTREAM_MAP.md")
 REGEN = "python ci/upstream_map.py"
 
+if not os.path.exists(MAP):
+    # Installed distribution: the map lives in the repository, not the
+    # package. Nothing to check here.
+    pytest.skip("UPSTREAM_MAP.md is not part of the installed package",
+                allow_module_level=True)
+
 
 def library_modules():
     """Every module the map should account for, as ``layer/name.py``."""
@@ -48,7 +54,7 @@ def mentioned():
 def test_the_map_records_which_upstream_it_was_built_against(mentioned):
     """Without a baseline the map cannot be checked or regenerated."""
     text = open(MAP).read()
-    assert re.search(r"Upstream baseline: `\S+` at `[0-9a-f]{7,}`", text), (
+    assert re.search(r"Upstream baseline: `[0-9a-f]{7,}`", text), (
         "the map does not name the upstream commit it describes")
 
 

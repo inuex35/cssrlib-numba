@@ -90,9 +90,7 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
         self.nav.el = np.zeros(uGNSS.MAXSAT)
 
         # Observation noise, initial sigmas, process noise and the
-        # processing options all now come from cfg (see cssrlib.estimation.config);
-        # they used to be assigned here and then partly re-assigned by
-        # whichever subclass had been instantiated.
+        # processing options come from cfg (cssrlib.estimation.config).
 
         # Initial state vector
         #
@@ -102,8 +100,7 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
 
         # Diagonal elements of covariance matrix
         #
-        dP = np.diag(self.nav.P)
-        dP.flags['WRITEABLE'] = True
+        dP = np.einsum('ii->i', self.nav.P)  # writable diagonal view
 
         dP[0:3] = self.nav.sig_p0**2
         # Velocity
@@ -115,12 +112,8 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
         if lay.ntrop:
             dP[lay.npos] = self.nav.sig_ztd0**2
 
-        # Process noise, addressed through the layout: the hardcoded
-        # 3/4/6/7 offsets silently shifted the iono block when
-        # trop_opt=0 while iono_opt=1 (satellite 1's iono state got
-        # process noise 0), and the ambiguity slice started beyond
-        # q.size (q covers only the first na states — ambiguity process
-        # noise never existed; see nq == na in StateLayout).
+        # Process noise, addressed through StateLayout (q covers the
+        # first na states; ambiguities carry none).
         self.nav.q = np.zeros(self.nav.nq)
         self.nav.q[0:3] = self.nav.sig_qp**2
         if lay.pmode >= 1:  # kinematic
@@ -139,6 +132,18 @@ class gnssobs(QualityControlMixin, ObservationModelMixin, AmbiguityMixin,
             self.nav.monlevel = 0
         else:
             self.nav.fout = open(logfile, 'w')
+
+    def close(self):
+        """Close the monitor log file, if one was opened."""
+        if self.nav.fout is not None:
+            self.nav.fout.close()
+            self.nav.fout = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _apply_config(self, cfg):
         """Merge a configuration into ``nav``, letting the caller win.
