@@ -17,11 +17,6 @@ import numpy as np
 from math import sin, cos
 
 
-NMAX = 10
-MAXDTE = 900.0
-EXTERR_CLK = 1e-3
-EXTERR_EPH = 5e-7
-
 
 def Rx(t):
     ct, st = cos(t), sin(t)
@@ -189,7 +184,7 @@ def orb2ecef(time, rs):
     """
 
     erpv = np.zeros(5)
-    rsun, _, _ = sunmoonpos(gpst2utc(time), erpv, True)
+    rsun, _, _ = sunmoonpos(gpst2utc(time), erpv)
     r = -rs
     ez = r/np.linalg.norm(r)
     r = rsun-rs
@@ -210,7 +205,10 @@ def eci2ecef(tutc, erpv):
     t3 = t2*t
     f = ast_args(t)
 
-    ze = (2306.2181*t+0.20188*t2+0.017998*t3)*rCST.AS2R
+    # zeta_A of IAU1976: 2306.2181" T + 0.30188" T^2 + 0.017998" T^3.
+    # The T^2 term read 0.20188 -- upstream peph.py's typo, which
+    # upstream ppp.py does not share. 0.1" T^2 is 4.5 mas by 2021.
+    ze = (2306.2181*t+0.30188*t2+0.017998*t3)*rCST.AS2R
     th = (2004.3109*t-0.42665*t2-0.041833*t3)*rCST.AS2R
     z = (2306.2181*t+1.09468*t2+0.018203*t3)*rCST.AS2R
     eps = (84381.448-46.8150*t-0.00059*t2+0.001813*t3)*rCST.AS2R
@@ -252,13 +250,19 @@ def ast_args(t):
     return f
 
 
-def sunmoonpos_eci(tut, rsun=False, rmoon=False):
+def sunmoonpos_eci(tut):
+    """Sun and Moon position in ECI [m] at ``tut`` (UT1).
+
+    Both bodies are always returned. This used to take rsun / rmoon flags
+    that were also the return slots -- passing False got False back -- which
+    cost a caller more than computing the handful of trig terms it saved.
+    """
     ep2000 = [2000, 1, 1, 12, 0, 0]
     t = timediff(tut, epoch2time(ep2000))/86400.0/36525.0
     f = ast_args(t)
     eps = 23.439291-0.0130042*t
     sine, cose = sin(eps*rCST.D2R), cos(eps*rCST.D2R)
-    if rsun:
+    if True:
         Ms = 357.5277233+35999.05034*t
         ls = 280.460+36000.770*t+1.914666471 * \
             sin(Ms*rCST.D2R)+0.019994643*sin(2.0*Ms*rCST.D2R)
@@ -266,7 +270,7 @@ def sunmoonpos_eci(tut, rsun=False, rmoon=False):
                       0.000139589*cos(2.0*Ms*rCST.D2R))
         sinl, cosl = sin(ls*rCST.D2R), cos(ls*rCST.D2R)
         rsun = rs*np.array([cosl, cose*sinl, sine*sinl])
-    if rmoon:
+    if True:
         lm = 218.32+481267.883*t+6.29*sin(f[0])-1.27*sin(f[0]-2.0*f[3]) \
             + 0.66*sin(2.0*f[3])+0.21*sin(2.0*f[0]) - \
             0.19*sin(f[1])-0.11*sin(2.0*f[2])
@@ -281,14 +285,14 @@ def sunmoonpos_eci(tut, rsun=False, rmoon=False):
     return rsun, rmoon
 
 
-def sunmoonpos(tutc, erpv, rsun=False, rmoon=False, gmst=False):
-    tut = timeadd(tutc, erpv[2])
-    rs, rm = sunmoonpos_eci(tut, rsun, rmoon)
-    U, gmst_ = eci2ecef(tutc, erpv)
-    if rsun:
-        rsun = U@rs
-    if rmoon:
-        rmoon = U@rm
-    if gmst:
-        gmst = gmst_
-    return rsun, rmoon, gmst
+def sunmoonpos(tutc, erpv=np.zeros(5)):
+    """Sun and Moon position in ECEF [m] and GMST [rad] at ``tutc`` (UTC).
+
+    ``models.tides`` carried a second copy of this that passed its UTC
+    argument to an eci2ecef declared to take GPS time, so the sidereal angle
+    came out one leap-second offset early -- 18 s, 271 arcsec of Earth
+    rotation, in 2021.
+    """
+    rs, rm = sunmoonpos_eci(timeadd(tutc, erpv[2]))
+    U, gmst = eci2ecef(tutc, erpv)
+    return U@rs, U@rm, gmst

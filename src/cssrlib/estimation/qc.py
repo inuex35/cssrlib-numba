@@ -5,22 +5,11 @@ into the ReceiverState of whichever receiver is being edited."""
 
 import numpy as np
 
-from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
-from cssrlib.gnss import uTropoModel, ecef2pos, geodist, satazel
+from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS
+from cssrlib.gnss import ecef2pos, geodist, satazel
 from cssrlib.gnss import time2str, timediff, gpst2utc
 from cssrlib.models.tides import tidedisp, tidedispIERS2010, uTideModel
 
-# format definition for logging
-fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
-fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f}\n"
-fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
-fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f} {:10.3f}\n"
-
-MIN_SIN_EL = 0.1 * rCST.D2R
-TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
-TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 class QualityControlMixin:
     """Quality control, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
@@ -43,7 +32,14 @@ class QualityControlMixin:
             if self.nav.pmode > 0:
                 rr_ += self.nav.x[3:6]*tt
         else:
-            rr_ = rr
+            # A copy, and an array: the tide correction below is applied with
+            # `rr_ += disp`, which writes through to whatever the caller
+            # passed. single_differences passes nav.rb, so with tidecorr on
+            # and rb held as an ndarray the base coordinate accumulated the
+            # tidal displacement every epoch -- 0.13 m after three, and
+            # growing. Held as a list it happened to escape, because numpy
+            # rebinds rather than extending.
+            rr_ = np.array(rr, dtype=float)
 
         # Solid Earth tide corrections
         #
@@ -139,15 +135,25 @@ class QualityControlMixin:
             sigsCP = obs.sig[sys_i][uTYP.L]
             sigsCN = obs.sig[sys_i][uTYP.S]
 
+            # Record which bands this satellite demonstrably transmits
+            # before any editing: L and P both present is transmission
+            # evidence regardless of what the quality tests make of it.
+            for f in range(min(self.nav.nf, obs.L.shape[1])):
+                if obs.L[j, f] != 0.0 and obs.P[j, f] != 0.0:
+                    rcv.band_seen[sat_i - 1, f] = True
+
             # Loop over signals
             #
             for f in range(self.nav.nf):
 
-                # Slot not carried by this constellation (mixed nf): treat as
-                # absent. Do NOT set edt -- the downstream
-                # "np.any(edt[sat,:]>0)" check would otherwise drop the whole
-                # satellite (the padded slot is never observed).
+                # Slot not carried by this constellation (mixed nf). It is
+                # not an observation, so mark it edited: consumers read the
+                # mask per band now, and "not usable" is exactly right for a
+                # slot that is never observed. (It had to stay 0 while the
+                # gate below was np.any, or the padded slot alone would have
+                # dropped the satellite.)
                 if f >= len(sigsCP):
+                    rcv.edt[i, f] = 1
                     continue
 
                 # Cycle  slip check by LLI
@@ -249,14 +255,46 @@ class QualityControlMixin:
             # bands its SYSTEM actually selected (a constellation offering
             # fewer than nav.nf common bands — e.g. GPS L1+L2 in an nf=3
             # setup — is judged on those bands only, so its satellites are
-            # not punished for a slot that was never selected). Within the
-            # selected bands the classic strict gate applies: any edited
-            # band drops the whole satellite — a missing or degraded band
-            # on a satellite whose system does provide it is a tracking /
-            # multipath canary (admitting L5-less GPS or B1I-only BeiDou-2
-            # measurably poisons the urban float solution).
+            # not punished for a slot that was never selected).
+            #
+            # Within the selected bands the strict gate applies: any edited
+            # band drops the whole satellite. This was relaxed to per-band
+            # admission once (np.all here), on the argument that discarding
+            # a 36 dB-Hz L1 because L2 sat at 14 dB-Hz wastes a good band
+            # -- and the relaxation was measured twice, in different years,
+            # to be wrong. In 2026-07 accepting L5-less GPS and B1I-only
+            # BeiDou-2 measurably poisoned the urban float solution, and
+            # the criterion "judge over the bands the system selected" was
+            # the resolution. In 2026-08 the relaxed gate collapsed the
+            # tokyo run2 tightly-coupled pipeline outright: 284 fixes in
+            # 300 epochs became 0, float RMS 0.13 m became 5.2 m, and
+            # restoring this gate alone -- with every other change of that
+            # commit kept -- restored the baseline print-identically.
+            #
+            # A degraded band on a satellite whose system provides it is a
+            # tracking / multipath canary; the band that still looks clean
+            # is standing next to one that does not.
+            #
+            # The per-band verdicts recorded above still matter: they are
+            # what the DDMeasurements edt / edtb masks report, and the
+            # per-band consumers (udstate, update_ambiguities, zdres,
+            # _sdres_build_plan) read them per band, which under this gate
+            # is equivalent for satellites that survive and exact for the
+            # uncarried slots of mixed-nf systems.
             nf_sys = min(self.nav.nf, len(sigsCP), len(sigsPR))
-            if nf_sys <= 0 or np.any(rcv.edt[i, :nf_sys] > 0):
+            if nf_sys <= 0:
+                rcv.edt[i, :] = 1
+                continue
+            judged = np.ones(nf_sys, dtype=bool)
+            if self.nav.sat_band_plan:
+                # Judge over the bands this satellite transmits (see
+                # ProcConfig.sat_band_plan). A band it has never produced
+                # is not a failure, exactly as a band its system never
+                # selected is not one; within the transmitted set the
+                # strict gate below applies unchanged.
+                judged = rcv.band_seen[sat_i - 1, :nf_sys].copy()
+                rcv.edt[i, :nf_sys][~judged] = 1   # unusable, not failed
+            if not judged.any() or np.any(rcv.edt[i, :nf_sys][judged] > 0):
                 rcv.edt[i, :] = 1
                 continue
 

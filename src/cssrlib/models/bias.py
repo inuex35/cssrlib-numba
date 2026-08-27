@@ -14,11 +14,6 @@ from cssrlib.gnss import rSigRnx, uGNSS, uTYP
 import numpy as np
 
 
-NMAX = 10
-MAXDTE = 900.0
-EXTERR_CLK = 1e-3
-EXTERR_EPH = 5e-7
-
 
 class bias_t():
     def __init__(self, sat: int, tst: gtime_t, ted: gtime_t, sig1: rSigRnx,
@@ -47,22 +42,6 @@ class biasdec():
         days = (year-1970)*365+(year-1969)//4+doy-1
         return gtime_t(days*86400+sec)
 
-    def getdcb(self, sat, time, sig):
-        """ retrieve DCB based on satellite, epoch and signal code """
-        bias, std, bcode = None, None, None
-
-        for dcb in self.dcb:
-            if dcb.sat == sat and \
-                    dcb.sig2 == sig and \
-                    timediff(time, dcb.tst) >= 0.0 and \
-                    timediff(time, dcb.ted) < 0.0:
-                bias = dcb.bias
-                std = dcb.std
-                bcode = dcb.code1
-                break
-
-        return bias, std, bcode
-
     def getosb(self, sat, time, sig):
         """ retrieve OSB value based on satellite, epoch and signal code """
 
@@ -78,22 +57,6 @@ class biasdec():
                 break
 
         return bias
-
-    def getosbstd(self, sat, time, sig):
-        """ retrieve OSB sigma based on satellite, epoch and signal code """
-
-        std = np.nan
-
-        for osb in self.osb:
-
-            if osb.sat == sat and \
-                    osb.sig1 == sig and \
-                    timediff(time, osb.tst) >= 0.0 and \
-                    timediff(time, osb.ted) < 0.0:
-                std = osb.std
-                break
-
-        return std
 
     def parse(self, fname, siteID=None):
         with open(fname, "r", encoding='latin-1') as fh:

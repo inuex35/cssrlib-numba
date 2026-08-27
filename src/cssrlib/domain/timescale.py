@@ -68,19 +68,6 @@ def timeget():
     return epoch2time(ep)
 
 
-def glo2time(tref: gtime_t, tod):
-    time = timeadd(gpst2utc(tref), 10800.0)
-    week, tow = time2gpst(time)
-    tod_p = tow % 86400.0
-    tow -= tod_p
-    if tod < tod_p-43200.0:
-        tod += 86400.0
-    elif tod > tod_p+43200.0:
-        tod -= 86400.0
-    time = gpst2time(week, tow+tod)
-    return utc2gpst(timeadd(time, -10800.0))
-
-
 def gpst2utc(t: gtime_t):
     for i in range(len(leaps_)):
         tu = timeadd(t, leaps_[i][6])
@@ -221,33 +208,6 @@ def interpc(coef, lat):
     return coef[:, i-1]*(1.0-d)+coef[:, i]*d
 
 
-def mapfParam(t, lat):
-    """ mapping function parameters based on lat, time """
-    # lat = [15,30,45,60,75]
-    # hs(average) [a,b,c] hs(amplitude) [a,b,c] wet [a,b,c]
-    coef = np.array([
-        [1.2769934E-3, 1.2683230E-3, 1.2465397E-3, 1.2196049E-3, 1.2045996E-3],
-        [2.9153695E-3, 2.9152299E-3, 2.9288445E-3, 2.9022565E-3, 2.9024912E-3],
-        [62.610505E-3, 62.837393E-3, 63.721774E-3, 63.824265E-3, 64.258455E-3],
-        [0.0000000E-0, 1.2709626E-5, 2.6523662E-5, 3.4000452E-5, 4.1202191E-5],
-        [0.0000000E-0, 2.1414979E-5, 3.0160779E-5, 7.2562722E-5, 11.723375E-5],
-        [0.0000000E-0, 9.0128400E-5, 4.3497037E-5, 84.795348E-5, 170.37206E-5],
-        [5.8021897E-4, 5.6794847E-4, 5.8118019E-4, 5.9727542E-4, 6.1641693E-4],
-        [1.4275268E-3, 1.5138625E-3, 1.4572752E-3, 1.5007428E-3, 1.7599082E-3],
-        [4.3472961E-2, 4.6729510E-2, 4.3908931E-2, 4.4626982E-2, 5.4736038E-2],
-    ])
-    y = (time2doy(t)-28.0)/365.25
-    if lat < 0.0:
-        y += 0.5
-    cosy = np.cos(2.0*np.pi*y)
-    c = interpc(coef, np.abs(np.rad2deg(lat)))
-    ah = c[0:3]-c[3:6]*cosy
-    aw = c[6:9]
-
-    # return [ah,bh,ch], [aw,bw,cw]
-    return ah, aw
-
-
 def str2time(s, i, n):
     """ string to time conversion """
     if i < 0 or len(s) < i:
@@ -275,14 +235,3 @@ def adjtime(t: gtime_t, tref: gtime_t, dt=rCST.WEEK_SEC):
     if tt > dt/2.0:
         return timeadd(t, -dt)
     return t
-
-
-def tod2tow(tod: float, time0: gtime_t):
-    """ translate from time-of-day to time-of-week """
-    week, tow0 = time2gpst(time0)
-    tow_ref = tow0//rCST.DAY_SEC*rCST.DAY_SEC
-
-    tow = tow_ref + tod
-    time = adjtime(gpst2time(week, tow), time0, dt=rCST.DAY_SEC)
-
-    return time

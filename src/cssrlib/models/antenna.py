@@ -18,11 +18,6 @@ import numpy as np
 from cssrlib.models.frames import orb2ecef
 
 
-NMAX = 10
-MAXDTE = 900.0
-EXTERR_CLK = 1e-3
-EXTERR_EPH = 5e-7
-
 
 class pcv_t():
     def __init__(self):
@@ -103,48 +98,6 @@ class atxdec():
                         """
                         var = var[0:pcv.nv]
                     pcv.var.update({sig: np.array(var)})
-
-    def readngspcv(self, fname, pcvs=None):
-        """ read NGS antenna parameter file """
-
-        state = False
-        sys = uGNSS.NONE
-        n = 0
-
-        sig1 = rSigRnx('GL1')
-        sig2 = rSigRnx('GL2')
-
-        with open(fname, "r") as fh:
-            for line in fh:
-                if len(line) >= 62 and line[61] == '|':
-                    continue
-                if line[0] != ' ':
-                    n = 0
-                n += 1
-                if n == 1:
-                    pcv = pcv_t()
-                    pcv.sat = None
-                    pcv.code = 0
-                    pcv.type = line[:20]
-                    pcv.zen = [0.0, 90.0, 5.0]
-                    pcv.nv = int((pcv.zen[1]-pcv.zen[0])/pcv.zen[2])+1
-                elif n == 2:
-                    neu = np.array([float(x) for x in line[3:30].split()])
-                    pcv.off[sig1] = neu[[1, 0, 2]]
-                elif n == 3:
-                    var = [float(x) for x in line.split()]
-                elif n == 4:
-                    var += [float(x) for x in line.split()]
-                    pcv.var.update({sig1: np.array(var)})
-                elif n == 5:
-                    neu = np.array([float(x) for x in line[3:30].split()])
-                    pcv.off[sig2] = neu[[1, 0, 2]]
-                elif n == 6:
-                    var = [float(x) for x in line.split()]
-                elif n == 7:
-                    var += [float(x) for x in line.split()]
-                    pcv.var.update({sig2: np.array(var)})
-                    self.pcvr.append(pcv)
 
 
 def searchpcv(pcvs, name, time):

@@ -7,20 +7,8 @@ import numpy as np
 
 from cssrlib.models.ephemeris import satposs
 from cssrlib.gnss import sat2id, sat2prn, uTYP, uGNSS, rCST
-from cssrlib.gnss import uTropoModel
 from cssrlib.gnss import time2str, timediff
 
-# format definition for logging
-fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
-fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f}\n"
-fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
-fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f} {:10.3f}\n"
-
-MIN_SIN_EL = 0.1 * rCST.D2R
-TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
-TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 class FilterMixin:
     """Filtering and the epoch driver, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
@@ -69,8 +57,21 @@ class FilterMixin:
                 sys_i, _ = sat2prn(sat_)
 
                 self.nav.outc[i, f] += 1
-                reset = (self.nav.outc[i, f] >
-                         self.nav.maxout or np.any(self.nav.edt[i, :] > 0))
+                # A cycle slip must reset the ambiguity too. qcedit stopped
+                # raising edt for LLI / GF slips -- an LLI is a slip
+                # notification, not a bad observation, so dropping the
+                # measurement was wrong -- and records nav.slip instead
+                # (see ReceiverState.slip: "Cleared by udstate after the
+                # reset is applied"). Nothing here read it, so on the PPP /
+                # PPP-RTK path the pre-slip ambiguity survived the slip and
+                # quietly poisoned the filter.
+                #
+                # Per band, because that is how the flags are recorded: LLI
+                # is per band, and the GF detector, which cannot attribute
+                # the jump, already raises both bands itself.
+                reset = (self.nav.outc[i, f] > self.nav.maxout
+                         or self.nav.edt[i, f] > 0
+                         or self.nav.slip[i, f] > 0)
                 if sys_i not in obs.sig.keys():
                     continue
 
@@ -83,6 +84,7 @@ class FilterMixin:
                 if reset and self.nav.x[j] != 0.0:
                     self.initx(0.0, 0.0, j)
                     self.nav.outc[i, f] = 0
+                    self.nav.slip[i, f] = 0
 
                     if self.nav.monlevel > 0:
                         self.nav.fout.write(
@@ -116,7 +118,9 @@ class FilterMixin:
 
                 # Do not initialize invalid observations
                 #
-                if np.any(self.nav.edt[sat[i]-1, :] > 0):
+                # Per band: editing is per band now, so a satellite kept for
+                # its good band must still have that band initialized.
+                if self.nav.edt[sat[i]-1, f] > 0:
                     continue
 
                 if f >= self.nsig_sys(obs, sys[i]):  # slot not carried (mixed nf)

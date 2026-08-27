@@ -54,6 +54,23 @@ pip install .
 
 in the root directory, where the ``setup.cfg`` file is located.
 
+Following upstream
+------------------
+
+This branch is a layered rewrite of the flat upstream package, so it cannot
+take upstream changes by merging: `git diff -M50%` finds no renames between
+the two trees at all. [`UPSTREAM_MAP.md`](UPSTREAM_MAP.md) says where every
+upstream symbol went -- `pppos.zdres` is now
+`cssrlib.estimation.residuals.ObservationModelMixin.zdres`, and so on -- and
+which upstream modules were dropped and why.
+
+It is generated. After pulling upstream, rebuild it:
+
+```
+python ci/upstream_map.py            # rewrite the map
+python ci/upstream_map.py --check    # or just fail if it is stale
+```
+
 Testing
 -------
 

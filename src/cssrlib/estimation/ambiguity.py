@@ -6,23 +6,11 @@ RTKLIB-compatible variants, and fix-and-hold."""
 import numpy as np
 from numba import njit
 
-from cssrlib.gnss import sat2prn, uGNSS, rCST
+from cssrlib.gnss import sat2prn, uGNSS
 from cssrlib.gnss import SAT_SYS_ARR
-from cssrlib.gnss import uTropoModel
 from cssrlib.gnss import time2str
 from cssrlib.core.mlambda import mlambda
 
-# format definition for logging
-fmt_ztd = "{}         ztd      ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f}\n"
-fmt_ion = "{} {}-{} ion {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f}\n"
-fmt_res = "{} {}-{} res {} ({:3d}) {:10.3f} sig_i {:10.3f} sig_j {:10.3f}\n"
-fmt_amb = "{} {}-{} amb {} ({:3d},{:3d}) {:10.3f} {:10.3f} {:10.3f} " + \
-    "{:10.3f} {:10.3f} {:10.3f}\n"
-
-MIN_SIN_EL = 0.1 * rCST.D2R
-TROPO_MODEL_SAAST = int(uTropoModel.SAAST)
-TROPO_MODEL_HOPF = int(uTropoModel.HOPF)
 
 @njit(cache=True)
 def _ddidx_core(sat_arr, nav_x, nav_vsat, nav_el, sys_lookup,
@@ -106,8 +94,11 @@ def solve_dd_ambiguities(x, P, ix, na, nx, parmode, P0, thresar):
     b, s, nfix, Ps = mlambda(y, Qb, parmode=parmode, P0=P0)
     s0 = float(s[0]) if len(s) > 0 else 0.0
     s1 = float(s[1]) if len(s) > 1 else 0.0
-    accepted = bool(nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
-                                  s[1]/s[0] >= thresar))
+    # s0 / s1 above, not s[0] / s[1]: the guards exist because mlambda can
+    # return fewer than two residuals, and reading s[1] here would have
+    # raised IndexError in exactly the case they were written for.
+    accepted = bool(nfix > 0 and (parmode == 2 or s0 <= 0.0 or
+                                  s1/s0 >= thresar))
     sol = DdSolution(accepted=accepted, s0=s0, s1=s1, nfix=int(nfix),
                      ps=float(Ps), bias=(b[:, 0] if b.ndim == 2 else b))
     if accepted:
@@ -527,12 +518,3 @@ class AmbiguityMixin:
                     fix[i, f] = 3
                     n_held += 1
         return n_held
-
-    def sysidx(self, satlist, sys_ref):
-        """ return index of satellites with sys=sys_ref """
-        idx = []
-        for k, sat in enumerate(satlist):
-            sys, _ = sat2prn(sat)
-            if sys == sys_ref:
-                idx.append(k)
-        return idx
