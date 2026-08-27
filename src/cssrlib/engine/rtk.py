@@ -39,6 +39,13 @@ class DDMeasurements(dict):
     obs_sd : Obs
         Single-difference (rover - base) observations at ``sat``: ``obs_sd.L``
         and ``obs_sd.P`` carry the per-frequency differences.
+    edt, edtb : np.ndarray of bool
+        Per-band editing masks for ``sat``, rover and base side, shaped
+        ``(len(sat), nf)``. True means qcedit rejected that band. Editing is
+        per band -- a satellite is kept while any band is usable -- so a
+        consumer reading the raw ``obs`` / ``obsb`` arrays must apply these;
+        ``obs_sd`` already has them applied. ``obs`` and ``obsb`` themselves
+        are never modified.
     y, e : np.ndarray or None
         Zero-difference base residuals / line-of-sight (``None`` when
         ``dd_only=True``).
@@ -126,35 +133,42 @@ class rtkpos(gnssobs):
 
         np.maximum(rover.slip, base.slip, out=rover.slip)
 
-        # Per-frequency editing: a sat survives qcedit if ANY band passed,
-        # so zero out the bands that failed on either receiver. Consumers
-        # (SD diff below, DD factor builders) already skip zero L / P.
+        # Per-frequency editing: a sat survives qcedit while ANY band
+        # passed, so the bands that failed on either receiver are masked out
+        # here. Consumers (the SD diff below, DD factor builders) already
+        # skip zero L / P.
+        #
+        # Masked into local copies, never into obs / obsb. These belong to
+        # the caller, and sync_obs_hold hands the same base record back for
+        # several rover epochs (5 Hz rover on a 1 Hz base): editing it in
+        # place degraded a record that is meant to be reused, and left every
+        # caller that reads obs.L / obsb.L afterwards looking at data this
+        # method quietly rewrote.
         nfu = min(self.nav.nf, obs.L.shape[1])
         eu = rover.edt[np.asarray(obs.sat) - 1, :nfu] > 0
-        obs.L[:, :nfu][eu] = 0.0
-        obs.P[:, :nfu][eu] = 0.0
+        Lu, Pu = obs.L.copy(), obs.P.copy()
+        Lu[:, :nfu][eu] = 0.0
+        Pu[:, :nfu][eu] = 0.0
+
         nfr = min(self.nav.nf, obsb.L.shape[1])
         er = base.edt[np.asarray(obsb.sat) - 1, :nfr] > 0
-        obsb.L[:, :nfr][er] = 0.0
-        obsb.P[:, :nfr][er] = 0.0
+        Lr, Pr = obsb.L.copy(), obsb.P.copy()
+        Lr[:, :nfr][er] = 0.0
+        Pr[:, :nfr][er] = 0.0
 
         sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
         iu, ir = self._common_indices(obs, obsb, sat_ed)
 
         obs_ = copy(obs)
         obs_.sat = obs.sat[iu]
-        obs_.L = self._build_frequency_diff(obs.L[iu, :], obsb.L[ir, :])
-        obs_.P = self._build_frequency_diff(obs.P[iu, :], obsb.P[ir, :])
+        obs_.L = self._build_frequency_diff(Lu[iu, :], Lr[ir, :])
+        obs_.P = self._build_frequency_diff(Pu[iu, :], Pr[ir, :])
         return iu, obs_
 
     def _common_indices(self, obs, obsb, sat_ed):
         ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
         iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
         return iu, ir
-
-    @staticmethod
-    def _row_has_nonzero(row):
-        return np.any(row != 0)
 
     def update_ambiguities(self, obs):
         """Initialize / reset the float ambiguity states for this epoch.
@@ -171,10 +185,14 @@ class rtkpos(gnssobs):
                 self.nav.outc[i, f] += 1
                 sat_ = i + 1
                 sys_i, _ = sat2prn(sat_)
+                # Per band: qcedit records edt and slip per band, and a
+                # satellite now survives on its good bands. Reading the whole
+                # row here would let one degraded band reset the ambiguity of
+                # every other band on that satellite.
                 reset = (
                     self.nav.outc[i, f] > self.nav.maxout
-                    or self._row_has_nonzero(self.nav.edt[i, :])
-                    or self._row_has_nonzero(self.nav.slip[i, :])
+                    or self.nav.edt[i, f] > 0
+                    or self.nav.slip[i, f] > 0
                 )
                 if sys_i not in obs.sig:
                     continue
@@ -186,7 +204,7 @@ class rtkpos(gnssobs):
 
             for i in range(ns):
                 sat_i = sat[i]
-                if self._row_has_nonzero(self.nav.edt[sat_i-1, :]):
+                if self.nav.edt[sat_i-1, f] > 0:
                     continue
                 sys_i, _ = sat2prn(sat_i)
                 if sys_i not in obs.sig:
@@ -284,11 +302,18 @@ class rtkpos(gnssobs):
         self.nav.sat = sat
         self.nav.el[sat-1] = el
 
+        # Per-band editing masks over the common satellites, so a caller
+        # reading obs / obsb directly can drop the same bands obs_sd did.
+        nf = self.nav.nf
+        edt_u = self.nav.rcv.edt[sat-1, :nf] > 0
+        edt_r = self.base_rcv.edt[sat-1, :nf] > 0
+
         return DDMeasurements({
             'rs': rs, 'vs': vs, 'dts': dts, 'svh': svh,
             'rsb': rsb, 'vsb': vsb, 'dtsb': dtsb, 'svhb': svhb,
             'y': None, 'e': None, 'yu': None, 'eu': None, 'elu': None,
             'iu': iu, 'ir': ir, 'sat': sat, 'el': el,
+            'edt': edt_u, 'edtb': edt_r,
             'obs_sd': obs_sd, 'pos_pred': pos_pred,
         })
 

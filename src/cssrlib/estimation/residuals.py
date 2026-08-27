@@ -196,7 +196,13 @@ def _sdres_build_plan(obs, sat, el, y, nav):
                 sat_id = int(sat_array[sat_pos])
                 if sat_id <= 0 or sat_id > nav.edt.shape[0]:
                     continue
-                if np.any(nav.edt[sat_id-1, :] > 0):
+                # Per band. `f` walks phase slots then code slots, so the
+                # band this measurement belongs to is freq_idx. Reading the
+                # whole row dropped every band of a satellite that qcedit
+                # kept for its good ones.
+                if nav.edt[sat_id-1, freq_idx] > 0:
+                    continue
+                if nav.edt[int(sat_array[ref_pos])-1, freq_idx] > 0:
                     continue
                 if y[ref_pos, f] == 0.0 or y[sat_pos, f] == 0.0:
                     continue
@@ -335,9 +341,11 @@ class ObservationModelMixin:
             sat = obs.sat[i]
             sys, _ = sat2prn(sat)
 
-            # Skip edited observations
+            # Skip satellites with nothing usable left. Editing is per
+            # band, so this is the all-bands-gone case only; the surviving
+            # bands are selected when y is filled at the end of the loop.
             #
-            if np.any(self.nav.edt[sat-1, :] > 0):
+            if np.all(self.nav.edt[sat-1, :] > 0):
                 continue
 
             if inet > 0 and sat not in cs.lc[inet].sat_n:
@@ -552,6 +560,10 @@ class ObservationModelMixin:
             r += relatv - _c*dts[i]
 
             for f in range(nsf):
+                # An edited band leaves its residual at zero, which is how
+                # every consumer already spells "no observation".
+                if self.nav.edt[sat-1, f] > 0:
+                    continue
                 y[i, f] = obs.L[i, f]*lam[f]-(r+cpc[i, f])
                 y[i, f+nf] = obs.P[i, f]-(r+prc[i, f])
 
