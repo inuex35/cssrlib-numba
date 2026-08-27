@@ -1,20 +1,28 @@
-"""GLONASS propagation helpers compiled with Numba."""
+"""GLONASS broadcast-ephemeris propagation, compiled with Numba.
+
+The RK4 integrator for :func:`cssrlib.models.ephemeris.geph2pos`. Splitting
+it out is what lets it be a kernel at all: the integrator is arrays and
+floats, while ``geph2pos`` handles a ``Geph`` object Numba cannot see.
+"""
 
 from __future__ import annotations
 
 import numpy as np
-
-from cssrlib.gnss import rCST
 from numba import njit
 
+from cssrlib.gnss import rCST
+
+# Bound as module-level floats: Numba resolves globals at compile time and
+# cannot read attributes off the rCST class from inside a kernel.
 OMGE_GLO = float(rCST.OMGE_GLO)
 MU_GLO = float(rCST.MU_GLO)
 J2_GLO = float(rCST.J2_GLO)
 RE_GLO = float(rCST.RE_GLO)
 
 
-def _rk4_derivative_kernel(state: np.ndarray, acc: np.ndarray) -> np.ndarray:
-    """Return orbital derivatives for a GLONASS state vector."""
+@njit(cache=True)
+def _rk4_derivative(state: np.ndarray, acc: np.ndarray) -> np.ndarray:
+    """Orbital derivatives for a GLONASS state vector: J2 + rotating frame."""
 
     deriv = np.zeros(6, dtype=np.float64)
     r2 = state[0] * state[0] + state[1] * state[1] + state[2] * state[2]
@@ -36,8 +44,9 @@ def _rk4_derivative_kernel(state: np.ndarray, acc: np.ndarray) -> np.ndarray:
     return deriv
 
 
-def _rk4_step_kernel(dt: float, state: np.ndarray, acc: np.ndarray) -> None:
-    """Advance the state vector by dt seconds using RK4."""
+@njit(cache=True)
+def _rk4_step(dt: float, state: np.ndarray, acc: np.ndarray) -> None:
+    """Advance ``state`` in place by ``dt`` seconds using RK4."""
 
     k1 = _rk4_derivative(state, acc)
     w = state + 0.5 * dt * k1
@@ -49,8 +58,14 @@ def _rk4_step_kernel(dt: float, state: np.ndarray, acc: np.ndarray) -> None:
     state += (k1 + 2.0 * k2 + 2.0 * k3 + k4) * (dt / 6.0)
 
 
-def _propagate_state_kernel(dt: float, state: np.ndarray, acc: np.ndarray, step: float) -> None:
-    """Integrate the GLONASS state forward/backward by |dt| seconds."""
+@njit(cache=True)
+def _propagate_state(dt: float, state: np.ndarray, acc: np.ndarray,
+                     step: float) -> None:
+    """Integrate ``state`` in place over |dt| seconds, ``step`` at a time.
+
+    The final increment is whatever is left over, so the endpoint is exact
+    rather than rounded to a whole ``step``.
+    """
 
     t_left = dt
     direction = -step if t_left < 0.0 else step
@@ -64,28 +79,6 @@ def _propagate_state_kernel(dt: float, state: np.ndarray, acc: np.ndarray, step:
         t_left -= direction
 
 
-_rk4_derivative = njit(cache=True)(_rk4_derivative_kernel)
-_rk4_step = njit(cache=True)(_rk4_step_kernel)
-_propagate_state = njit(cache=True)(_propagate_state_kernel)
-
-
-def deq(state: np.ndarray, acc: np.ndarray) -> np.ndarray:
-    """Public wrapper around the derivative kernel (compatible with legacy API)."""
-
-    state_arr = np.asarray(state, dtype=np.float64)
-    acc_arr = np.asarray(acc, dtype=np.float64)
-    return _rk4_derivative(state_arr, acc_arr)
-
-
-def glorbit(dt: float, state: np.ndarray, acc: np.ndarray) -> np.ndarray:
-    """Runge–Kutta orbit propagation for legacy callers."""
-
-    result = np.asarray(state, dtype=np.float64).copy()
-    acc_arr = np.asarray(acc, dtype=np.float64)
-    _rk4_step(float(dt), result, acc_arr)
-    return result
-
-
 def propagate_glonass(
     dt: float,
     pos: np.ndarray,
@@ -95,22 +88,23 @@ def propagate_glonass(
     gamn: float,
     step: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Propagate GLONASS broadcast ephemeris using the accelerated solver."""
+    """Propagate a GLONASS ephemeris ``dt`` seconds past its ``toe``.
 
-    pos_arr = np.asarray(pos, dtype=np.float64).reshape(3)
-    vel_arr = np.asarray(vel, dtype=np.float64).reshape(3)
-    acc_arr = np.asarray(acc, dtype=np.float64).reshape(3)
+    Returns ``(position, velocity, clock offset)`` in ECEF metres, m/s and
+    seconds. ``pos``/``vel`` are copied, not propagated in place: one
+    ephemeris serves every epoch in its validity window.
+    """
 
     state = np.zeros(6, dtype=np.float64)
-    state[0:3] = pos_arr
-    state[3:6] = vel_arr
-    _propagate_state(float(dt), state, acc_arr, float(step))
+    state[0:3] = np.asarray(pos, dtype=np.float64).reshape(3)
+    state[3:6] = np.asarray(vel, dtype=np.float64).reshape(3)
+
+    _propagate_state(float(dt), state,
+                     np.asarray(acc, dtype=np.float64).reshape(3),
+                     float(step))
+
     clk = -float(taun) + float(gamn) * float(dt)
     return state[0:3].copy(), state[3:6].copy(), clk
 
 
-__all__ = [
-    "propagate_glonass",
-    "deq",
-    "glorbit",
-]
+__all__ = ["propagate_glonass"]
