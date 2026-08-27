@@ -747,27 +747,31 @@ class ObservationModelMixin:
                             np.sqrt(self.nav.P[idx_j, idx_j]),
                         )
                     )
-                for idx_meas in range(meas_count):
-                    if not is_phase_arr[idx_meas]:
-                        continue
-                    idx_i = amb_i_idx[idx_meas]
-                    idx_j = amb_j_idx[idx_meas]
-                    if idx_i < 0 or idx_j < 0:
-                        continue
-                    label = sig_label_table[sig_label_idx_arr[idx_meas]]
-                    sat_i_id = sat[ref_idx_arr[idx_meas]]
-                    sat_j_id = sat[sat_idx_arr[idx_meas]]
-                    self.nav.fout.write(
-                        fmt_amb.format(
-                            time2str(obs.t),
-                            sat2id(sat_i_id),
-                            sat2id(sat_j_id),
-                            label,
-                            idx_i,
-                            idx_j,
-                            lam_ref_arr[idx_meas],
-                            lam_sat_arr[idx_meas],
-                            x[idx_i],
+
+            # Not nested under `if use_iono:`, where it was: a configuration
+            # that does not estimate the ionosphere -- RTK, PPP-RTK -- still
+            # has ambiguities, and printed none of them.
+            for idx_meas in range(meas_count):
+                if not is_phase_arr[idx_meas]:
+                    continue
+                idx_i = amb_i_idx[idx_meas]
+                idx_j = amb_j_idx[idx_meas]
+                if idx_i < 0 or idx_j < 0:
+                    continue
+                label = sig_label_table[sig_label_idx_arr[idx_meas]]
+                sat_i_id = sat[ref_idx_arr[idx_meas]]
+                sat_j_id = sat[sat_idx_arr[idx_meas]]
+                self.nav.fout.write(
+                    fmt_amb.format(
+                        time2str(obs.t),
+                        sat2id(sat_i_id),
+                        sat2id(sat_j_id),
+                        label,
+                        idx_i,
+                        idx_j,
+                        lam_ref_arr[idx_meas],
+                        lam_sat_arr[idx_meas],
+                        x[idx_i],
                         x[idx_j],
                         np.sqrt(self.nav.P[idx_i, idx_i]),
                         np.sqrt(self.nav.P[idx_j, idx_j]),

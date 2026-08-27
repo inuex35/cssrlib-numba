@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from cssrlib.gnss import uGNSS, uTYP, rSigRnx
 from cssrlib.gnss import epoch2time
-from cssrlib.gnss import prn2sat, char2sys
+from cssrlib.gnss import prn2sat, char2sys, sys2char
 from cssrlib.gnss import Obs
 from cssrlib.gnss import id2sat
 
@@ -55,6 +55,12 @@ class ObsFileMixin:
                 sigs = line[7:60].split()
                 while len(sigs) < nsig:
                     line2 = self.fobs.readline()
+                    if not line2:
+                        raise ValueError(
+                            f"RINEX header ends mid-record: SYS / # / OBS "
+                            f"TYPES declares {nsig} signals for "
+                            f"{sys2char(gns)} and the file stops after "
+                            f"{len(sigs)}")
                     sigs += line2[7:60].split()
 
                 # Convert to RINEX signal code and store in map

@@ -94,8 +94,11 @@ def solve_dd_ambiguities(x, P, ix, na, nx, parmode, P0, thresar):
     b, s, nfix, Ps = mlambda(y, Qb, parmode=parmode, P0=P0)
     s0 = float(s[0]) if len(s) > 0 else 0.0
     s1 = float(s[1]) if len(s) > 1 else 0.0
-    accepted = bool(nfix > 0 and (parmode == 2 or s[0] <= 0.0 or
-                                  s[1]/s[0] >= thresar))
+    # s0 / s1 above, not s[0] / s[1]: the guards exist because mlambda can
+    # return fewer than two residuals, and reading s[1] here would have
+    # raised IndexError in exactly the case they were written for.
+    accepted = bool(nfix > 0 and (parmode == 2 or s0 <= 0.0 or
+                                  s1/s0 >= thresar))
     sol = DdSolution(accepted=accepted, s0=s0, s1=s1, nfix=int(nfix),
                      ps=float(Ps), bias=(b[:, 0] if b.ndim == 2 else b))
     if accepted:

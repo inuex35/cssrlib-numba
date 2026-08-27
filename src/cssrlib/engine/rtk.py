@@ -300,7 +300,6 @@ class rtkpos(gnssobs):
         # Elevations come from qcedit (no zdres in the minimal DD-only core).
         el = self.nav.el[sat-1].copy()
         self.nav.sat = sat
-        self.nav.el[sat-1] = el
 
         # Per-band editing masks over the common satellites, so a caller
         # reading obs / obsb directly can drop the same bands obs_sd did.
