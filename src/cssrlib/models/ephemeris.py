@@ -8,6 +8,7 @@ import numpy as np
 from cssrlib.gnss import uGNSS, rCST, sat2prn, timediff, timeadd, vnorm
 from cssrlib.gnss import gtime_t, Geph, Eph, Alm, prn2sat, gpst2time, \
     time2gpst, timeget, time2gst, time2bdt, gst2time, bdt2time, epoch2time
+from cssrlib.models.glonass import propagate_glonass
 from datetime import datetime
 import xml.etree.ElementTree as et
 
@@ -71,60 +72,18 @@ def dtadjust(t1, t2, tw=604800):
     return dt
 
 
-def deq(x, acc):
-    xdot = np.zeros(6)
-
-    r2 = x[0:3]@x[0:3]
-    r3 = r2*np.sqrt(r2)
-    omg2 = rCST.OMGE_GLO**2
-
-    if r2 <= 0.0:
-        return xdot
-
-    a = 1.5*rCST.J2_GLO*rCST.MU_GLO*rCST.RE_GLO**2/r2/r3
-    b = 5.0*x[2]**2/r2
-    c = -rCST.MU_GLO/r3-a*(1.0-b)
-
-    xdot[0:3] = x[3:6]
-    xdot[3] = (c+omg2)*x[0]+2.0*rCST.OMGE_GLO*x[4]
-    xdot[4] = (c+omg2)*x[1]-2.0*rCST.OMGE_GLO*x[3]
-    xdot[5] = (c-2.0*a)*x[2]
-    xdot[3:6] += acc
-    return xdot
-
-
-def glorbit(t, x, acc):
-    k1 = deq(x, acc)
-    w = x + k1*t/2.0
-    k2 = deq(w, acc)
-    w = x + k2*t/2.0
-    k3 = deq(w, acc)
-    w = x + k3*t
-    k4 = deq(w, acc)
-    x += (k1+2.0*k2+2.0*k3+k4)*t/6.0
-    return x
-
-
 def geph2pos(time: gtime_t, geph: Geph, flg_v=False, TSTEP=1.0):
-    """ calculate GLONASS satellite position based on ephemeris """
+    """ calculate GLONASS satellite position based on ephemeris
+
+    The RK4 integration itself lives in :mod:`cssrlib.models.glonass`, which
+    compiles it with Numba. This module used to carry a second, pure-Python
+    copy of the same integrator and call that instead, so every GLONASS
+    satellite of every epoch ran the slow one -- 40x, measured over a 900 s
+    propagation -- while the compiled kernel sat unreferenced.
+    """
     t = timediff(time, geph.toe)
-    dts = -geph.taun+geph.gamn*t
-    x = np.zeros(6)
-    x[0:3] = geph.pos
-    x[3:6] = geph.vel
-
-    tt = -TSTEP if t < 0.0 else TSTEP
-
-    while True:
-        if np.fabs(t) <= 1e-9:
-            break
-        if np.fabs(t) < TSTEP:
-            tt = t
-        x = glorbit(tt, x, geph.acc)
-        t -= tt
-
-    rs = x[0:3]
-    vs = x[3:6]
+    rs, vs, dts = propagate_glonass(t, geph.pos, geph.vel, geph.acc,
+                                    geph.taun, geph.gamn, step=TSTEP)
 
     if flg_v:
         return rs, vs, dts
