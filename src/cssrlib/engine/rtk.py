@@ -102,6 +102,53 @@ class rtkpos(gnssobs):
         if self.base_nav is not self.nav:
             self.base_nav.tidecorr = uTideModel.NONE
 
+    @staticmethod
+    def _mask_rejected_bands(obs, rcv, nf):
+        """Zero out L/P on bands rejected by qcedit, into fresh copies."""
+        n_bands = min(nf, obs.L.shape[1])
+        rejected = rcv.edt[np.asarray(obs.sat) - 1, :n_bands] > 0
+        L = obs.L.copy()
+        P = obs.P.copy()
+        L[:, :n_bands][rejected] = 0.0
+        P[:, :n_bands][rejected] = 0.0
+        return L, P
+
+    def _compute_single_differences(self, obs, obsb, rs, dts, svh,
+                                    rsb=None, dtsb=None, svhb=None):
+        """Run QC on rover/base and return ``(iu, ir, obs_sd)``."""
+        rover = self.nav.rcv
+        base = self.base_rcv
+
+        if rsb is None or dtsb is None or svhb is None:
+            rsb, _, dtsb, svhb, _ = satposs(obsb, self.base_nav)
+
+        sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb,
+                               rr=self.base_nav.rb, rcv=base)
+        sat_ed_u = self.qcedit(obs, rs, dts, svh, rcv=rover)
+
+        np.maximum(rover.slip, base.slip, out=rover.slip)
+
+        # Mask into local copies: obs / obsb belong to the caller and the base
+        # record is reused across rover epochs.
+        Lu, Pu = self._mask_rejected_bands(obs, rover, self.nav.nf)
+        Lr, Pr = self._mask_rejected_bands(obsb, base, self.nav.nf)
+
+        sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
+        ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
+        iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
+
+        obs_ = copy(obs)
+        obs_.sat = obs.sat[iu]
+        obs_.L = self._build_frequency_diff(Lu[iu, :], Lr[ir, :])
+        obs_.P = self._build_frequency_diff(Pu[iu, :], Pr[ir, :])
+        # Rover-side columns follow the common-satellite indexing too.
+        for name in ('S', 'D', 'lli'):
+            col = getattr(obs, name, None)
+            if (isinstance(col, np.ndarray) and col.ndim == 2
+                    and col.shape[0] == len(obs.sat)):
+                setattr(obs_, name, col[iu, :])
+        return iu, ir, obs_
+
     def single_differences(self, obs, obsb, rs, dts, svh,
                            rsb=None, dtsb=None, svhb=None):
         """Build rover-base single differences for DD-only pipelines.
@@ -115,53 +162,9 @@ class rtkpos(gnssobs):
         L / P at the common satellite set. Pre-computed base satellite
         states (rsb / dtsb / svhb) may be passed to skip satposs.
         """
-        rover = self.nav.rcv
-        base = self.base_rcv
-
-        if rsb is None or dtsb is None or svhb is None:
-            rsb, _, dtsb, svhb, _ = satposs(obsb, self.base_nav)
-
-        # Which receiver each edit belongs to is now an argument, not a
-        # temporary rebinding of self.nav.
-        sat_ed_r = self.qcedit(obsb, rsb, dtsb, svhb,
-                               rr=self.base_nav.rb, rcv=base)
-        sat_ed_u = self.qcedit(obs, rs, dts, svh, rcv=rover)
-
-        np.maximum(rover.slip, base.slip, out=rover.slip)
-
-        # Mask the bands that failed qcedit on either receiver, into
-        # local copies: obs / obsb belong to the caller and the base
-        # record is reused across rover epochs.
-        nfu = min(self.nav.nf, obs.L.shape[1])
-        eu = rover.edt[np.asarray(obs.sat) - 1, :nfu] > 0
-        Lu, Pu = obs.L.copy(), obs.P.copy()
-        Lu[:, :nfu][eu] = 0.0
-        Pu[:, :nfu][eu] = 0.0
-
-        nfr = min(self.nav.nf, obsb.L.shape[1])
-        er = base.edt[np.asarray(obsb.sat) - 1, :nfr] > 0
-        Lr, Pr = obsb.L.copy(), obsb.P.copy()
-        Lr[:, :nfr][er] = 0.0
-        Pr[:, :nfr][er] = 0.0
-
-        sat_ed = np.intersect1d(sat_ed_u, sat_ed_r, True)
-        iu, ir = self._common_indices(obs, obsb, sat_ed)
-
-        obs_ = copy(obs)
-        obs_.sat = obs.sat[iu]
-        obs_.L = self._build_frequency_diff(Lu[iu, :], Lr[ir, :])
-        obs_.P = self._build_frequency_diff(Pu[iu, :], Pr[ir, :])
-        # Rover-side columns follow the common-satellite indexing too.
-        for name in ('S', 'D', 'lli'):
-            col = getattr(obs, name, None)
-            if isinstance(col, np.ndarray) and col.ndim == 2                     and col.shape[0] == len(obs.sat):
-                setattr(obs_, name, col[iu, :])
+        iu, _, obs_ = self._compute_single_differences(
+            obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb)
         return iu, obs_
-
-    def _common_indices(self, obs, obsb, sat_ed):
-        ir = np.intersect1d(obsb.sat, sat_ed, True, True)[1]
-        iu = np.intersect1d(obs.sat, sat_ed, True, True)[1]
-        return iu, ir
 
     def update_ambiguities(self, obs):
         """Initialize / reset the float ambiguity states for this epoch.
@@ -270,7 +273,7 @@ class rtkpos(gnssobs):
         if rsb is None or dtsb is None or svhb is None:
             rsb, vsb, dtsb, svhb, _ = satposs(obsb, self.base_nav)
 
-        iu, obs_sd = self.single_differences(
+        iu, ir, obs_sd = self._compute_single_differences(
             obs, obsb, rs, dts, svh, rsb=rsb, dtsb=dtsb, svhb=svhb
         )
         ns = len(iu)
@@ -279,7 +282,6 @@ class rtkpos(gnssobs):
             return None
 
         sat = obs.sat[iu]
-        ir = np.intersect1d(obsb.sat, sat, True, True)[1]
 
         # Elevations come from qcedit (no zdres in the minimal DD-only core).
         el = self.nav.el[sat-1].copy()
@@ -347,8 +349,3 @@ class rtkpos(gnssobs):
         both = (r != 0.0) & (b != 0.0)
         result[:, :cols] = np.where(both, r - b, 0.0)
         return result
-
-    # Deprecated aliases for the previous names (the "_external" / "_dd_only"
-    # suffixes lost their meaning once the internal EKF was removed).
-    manage_ambiguities_external = update_ambiguities
-    base_process_dd_only = single_differences
