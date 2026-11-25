@@ -287,8 +287,89 @@ def _ddcov_numpy(nb, Ri, Rj, nv):
         offset = end
     return R
 
+_APC_REF_SIG_MAP = {
+    sc.QZS_MADOCA: {
+        uGNSS.GPS: ("GC1W", "GC2W"),
+        uGNSS.GLO: ("RC1C", "RC2C"),
+        uGNSS.GAL: ("EC1C", "EC5Q"),
+        uGNSS.QZS: ("JC1C", "JC2S"),
+    },
+    sc.GAL_HAS_SIS: {
+        uGNSS.GPS: ("GC1W", "GC2W"),
+        uGNSS.GAL: ("EC1C", "EC7Q"),
+    },
+    sc.BDS_PPP: {
+        uGNSS.GPS: ("GC1W", "GC2W"),
+        uGNSS.BDS: ("CC6I",),
+    },
+}
+_APC_L1_SINGLE_MODES = (sc.GAL_HAS_IDD, sc.IGS_SSR, sc.RTCM3_SSR)
+_APC_L1_SINGLE_SIGS = {
+    uGNSS.GPS: ("GC1C",),
+    uGNSS.GLO: ("RC1C",),
+    uGNSS.GAL: ("EC1C",),
+    uGNSS.BDS: ("CC2I",),
+    uGNSS.QZS: ("JC1C",),
+}
+_APC_DUAL_DF_MODES = (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5)
+_APC_DUAL_DF_SIGS = {
+    uGNSS.GPS: ("GC1C", "GC5Q"),
+    uGNSS.GAL: ("EC1C", "EC5Q"),
+    uGNSS.SBS: ("SC1C", "SC5Q"),
+}
+_APC_TX_SSR_MODES = (
+    sc.QZS_MADOCA, sc.GAL_HAS_SIS, sc.GAL_HAS_IDD,
+    sc.IGS_SSR, sc.RTCM3_SSR, sc.BDS_PPP, sc.PVS_PPP,
+)
+
+
+def _select_apc_ref_signals(cs, sys):
+    """Select APC reference signals for a given CSSR mode and constellation."""
+    if cs is None:
+        return None
+    mode = cs.cssrmode
+    if mode in _APC_REF_SIG_MAP:
+        names = _APC_REF_SIG_MAP[mode].get(sys)
+    elif mode in _APC_L1_SINGLE_MODES:
+        names = _APC_L1_SINGLE_SIGS.get(sys)
+    elif mode in _APC_DUAL_DF_MODES:
+        names = _APC_DUAL_DF_SIGS.get(sys)
+    else:
+        names = None
+    return tuple(rSigRnx(n) for n in names) if names else None
+
+
 class ObservationModelMixin:
     """Residual computation, mixed into :class:`~cssrlib.engine.gnssobs.gnssobs`."""
+
+    def _compute_sat_biases(self, obs, bsx, cs, sat, sys, inet, sigsPR, sigsCP, ns2m):
+        """Return ``(cbias, pbias)`` in metres for one satellite."""
+        nsf = len(sigsCP)
+        cbias = np.zeros(nsf)
+        pbias = np.zeros(nsf)
+
+        if self.nav.ephopt == 4:  # from Bias-SINEX (IGS sign != RTCM)
+            cbias = np.array([-bsx.getosb(sat, obs.t, s) * ns2m for s in sigsPR])
+            if sys != uGNSS.GLO:
+                pbias = np.array([-bsx.getosb(sat, obs.t, s) * ns2m for s in sigsCP])
+            return cbias, pbias
+
+        if cs is not None:
+            if cs.lc[0].cstat & (1 << sCType.CBIAS) == (1 << sCType.CBIAS):
+                cbias = self.find_bias(cs, sigsPR, sat)
+            if inet > 0 and cs.lc[inet].cstat & (1 << sCType.CBIAS) == (1 << sCType.CBIAS):
+                cbias += self.find_bias(cs, sigsPR, sat, inet)
+
+            if cs.lc[0].cstat & (1 << sCType.PBIAS) == (1 << sCType.PBIAS):
+                pbias = self.find_bias(cs, sigsCP, sat)
+            if inet > 0 and cs.lc[inet].cstat & (1 << sCType.PBIAS) == (1 << sCType.PBIAS):
+                pbias += self.find_bias(cs, sigsCP, sat, inet)
+
+            if cs.cssrmode in [sc.QZS_CLAS, sc.BDS_PPP, sc.PVS_PPP]:
+                pbias = -pbias
+                cbias = -cbias
+
+        return cbias, pbias
 
     def zdres(self, obs, cs, bsx, rs, vs, dts, rr):
         """ non-differential residual """
@@ -304,25 +385,16 @@ class ObservationModelMixin:
         rr_ = rr.copy()
 
         # Solid Earth tide corrections
-        #
         if self.nav.tidecorr == uTideModel.SIMPLE:
-            pos = ecef2pos(rr_)
-            disp = tidedisp(gpst2utc(obs.t), pos)
+            disp = tidedisp(gpst2utc(obs.t), ecef2pos(rr_))
         elif self.nav.tidecorr == uTideModel.IERS2010:
-            pos = ecef2pos(rr_)
-            disp = tidedispIERS2010(gpst2utc(obs.t), pos)
+            disp = tidedispIERS2010(gpst2utc(obs.t), ecef2pos(rr_))
         else:
             disp = np.zeros(3)
         rr_ += disp
 
-        # Geodetic position
-        #
         pos = ecef2pos(rr_)
-
-        # Zenith tropospheric dry and wet delays at user position
-        #
-        trop_hs, trop_wet, _ = tropmodel(obs.t, pos,
-                                         model=self.nav.trpModel)
+        trop_hs, trop_wet, _ = tropmodel(obs.t, pos, model=self.nav.trpModel)
 
         if self.nav.trop_opt == 2 or self.nav.iono_opt == 2:  # from cssr
             inet = cs.find_grid_index(pos)
@@ -345,27 +417,17 @@ class ObservationModelMixin:
         prc = np.zeros((n, nf))
 
         for i in range(n):
-
             sat = obs.sat[i]
             sys, _ = sat2prn(sat)
 
-            # Skip satellites with nothing usable left. Editing is per
-            # band, so this is the all-bands-gone case only; the surviving
-            # bands are selected when y is filled at the end of the loop.
-            #
             if np.all(self.nav.edt[sat-1, :] > 0):
                 continue
-
             if inet > 0 and sat not in cs.lc[inet].sat_n:
                 continue
 
-            # Pseudorange, carrier-phase and C/N0 signals
-            #
             sigsPR = obs.sig[sys][uTYP.C]
             sigsCP = obs.sig[sys][uTYP.L]
 
-            # Wavelength
-            #
             if sys == uGNSS.GLO:
                 ch = self.nav.glo_ch.get(sat)
                 if ch is None:  # FCN unknown: no ephemeris decoded yet
@@ -376,153 +438,41 @@ class ObservationModelMixin:
                 lam = np.array([s.wavelength() for s in sigsCP])
                 frq = np.array([s.frequency() for s in sigsCP])
 
-            # Per-signal arrays span this constellation's signal count (nsf);
-            # the unused high slots of the nf-wide prc/cpc/y rows stay zero
-            # (see nsig_sys).
             nsf = len(sigsCP)
-            cbias = np.zeros(nsf)
-            pbias = np.zeros(nsf)
-
-            if self.nav.ephopt == 4:  # from Bias-SINEX
-
-                # Code and phase signal bias, converted from [ns] to [m]
-                # Note: IGS uses sign convention different with RTCM
-                cbias = np.array(
-                    [-bsx.getosb(sat, obs.t, s)*ns2m for s in sigsPR])
-                if sys != uGNSS.GLO:
-                    pbias = np.array(
-                        [-bsx.getosb(sat, obs.t, s)*ns2m for s in sigsCP])
-
-            elif cs is not None:  # from CSSR
-
-                if cs.lc[0].cstat & (1 << sCType.CBIAS) == (1 << sCType.CBIAS):
-                    cbias = self.find_bias(cs, sigsPR, sat)
-
-                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.CBIAS) == \
-                        (1 << sCType.CBIAS):
-                    cbias += self.find_bias(cs, sigsPR, sat, inet)
-
-                if cs.lc[0].cstat & (1 << sCType.PBIAS) == (1 << sCType.PBIAS):
-                    pbias = self.find_bias(cs, sigsCP, sat)
-
-                if inet > 0 and cs.lc[inet].cstat & (1 << sCType.PBIAS) == \
-                        (1 << sCType.PBIAS):
-                    pbias += self.find_bias(cs, sigsCP, sat, inet)
-
-                # note: some services use sign convention different with RTCM
-                if cs.cssrmode in [sc.QZS_CLAS, sc.BDS_PPP, sc.PVS_PPP]:
-                    pbias = -pbias
-                    cbias = -cbias
-
-            # Check for invalid biases
-            #
+            cbias, pbias = self._compute_sat_biases(
+                obs, bsx, cs, sat, sys, inet, sigsPR, sigsCP, ns2m)
             if np.isnan(cbias).any() or np.isnan(pbias).any():
                 if self.nav.monlevel > 3:
                     print("skip invalid cbias/pbias for sat={:d}".format(sat))
                 continue
 
-            # Geometric distance corrected for Earth rotation
-            # during flight time
-            #
             r, e[i, :] = geodist(rs[i, :], rr_)
             _, el[i] = satazel(pos, e[i, :])
             if el[i] < self.nav.elmin:
                 continue
 
-            # Shapiro relativistic effect
-            #
             relatv = shapiro(rs[i, :], rr_)
+            mapfh, mapfw = tropmapf(obs.t, pos, el[i], model=self.nav.trpModel)
+            trop = (mapfh*trph*r_hs + mapfw*trpw*r_wet
+                    if self.nav.trop_opt == 2 else mapfh*trop_hs + mapfw*trop_wet)
 
-            # Tropospheric delay mapping functions
-            #
-            mapfh, mapfw = tropmapf(obs.t, pos, el[i],
-                                    model=self.nav.trpModel)
-
-            # Tropospheric delay
-            #
-            if self.nav.trop_opt == 2:  # from cssr
-                trop = mapfh*trph*r_hs+mapfw*trpw*r_wet
-            else:
-                trop = mapfh*trop_hs + mapfw*trop_wet
-
-            # Ionospheric delay
-            #
-            if self.nav.iono_opt == 2 and inet > 0:  # from cssr
+            if self.nav.iono_opt == 2 and inet > 0:
                 idx_l = cs.lc[inet].sat_n.index(sat)
                 iono = np.array([40.3e16/(f*f)*stec[idx_l] for f in frq])
             else:
                 iono = np.zeros(nsf)
 
-            # Phase wind-up effect
-            #
             if self.nav.phw_opt > 0:
                 phw_mode = (False if self.nav.phw_opt == 2 else True)
-                self.nav.phw[sat-1] = windupcorr(obs.t, rs[i, :], vs[i, :],
-                                                 rr_, self.nav.phw[sat-1],
-                                                 full=phw_mode)
-
-                # cycle -> m
+                self.nav.phw[sat-1] = windupcorr(
+                    obs.t, rs[i, :], vs[i, :], rr_, self.nav.phw[sat-1], full=phw_mode)
                 phw = lam*self.nav.phw[sat-1]
             else:
                 phw = np.zeros(nsf)
 
-            # Select APC reference signals
-            #
-            sig0 = None
-            if cs is not None:
+            sig0 = _select_apc_ref_signals(cs, sys)
 
-                if cs.cssrmode == sc.QZS_MADOCA:
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1W"), rSigRnx("GC2W"))
-                    elif sys == uGNSS.GLO:
-                        sig0 = (rSigRnx("RC1C"), rSigRnx("RC2C"))
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"), rSigRnx("EC5Q"))
-                    elif sys == uGNSS.QZS:
-                        sig0 = (rSigRnx("JC1C"), rSigRnx("JC2S"))
-
-                elif cs.cssrmode == sc.GAL_HAS_SIS:
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1W"), rSigRnx("GC2W"))
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"), rSigRnx("EC7Q"))
-
-                elif cs.cssrmode in (sc.GAL_HAS_IDD, sc.IGS_SSR, sc.RTCM3_SSR):
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1C"),)
-                    elif sys == uGNSS.GLO:
-                        sig0 = (rSigRnx("RC1C"),)
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"),)
-                    elif sys == uGNSS.BDS:
-                        sig0 = (rSigRnx("CC2I"),)
-                    elif sys == uGNSS.QZS:
-                        sig0 = (rSigRnx("JC1C"),)
-
-                elif cs.cssrmode == sc.BDS_PPP:
-
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1W"), rSigRnx("GC2W"))
-                    elif sys == uGNSS.BDS:
-                        sig0 = (rSigRnx("CC6I"),)
-
-                elif cs.cssrmode in (sc.PVS_PPP, sc.SBAS_L1, sc.SBAS_L5):
-                    if sys == uGNSS.GPS:
-                        sig0 = (rSigRnx("GC1C"), rSigRnx("GC5Q"))
-                    elif sys == uGNSS.GAL:
-                        sig0 = (rSigRnx("EC1C"), rSigRnx("EC5Q"))
-                    elif sys == uGNSS.SBS:
-                        sig0 = (rSigRnx("SC1C"), rSigRnx("SC5Q"))
-
-            # Receiver/satellite antenna offset
-            #
             if self.nav.rcv_ant is None:
-                # ndarray, not a list: these are summed element-wise with the
-                # trop / iono terms below, where a list would concatenate (or
-                # raise on float + list).
                 antrPR = np.zeros(len(sigsPR))
                 antrCP = np.zeros(len(sigsCP))
             else:
@@ -530,53 +480,84 @@ class ObservationModelMixin:
                 antrCP = antModelRx(self.nav.rcv_ant, pos, e[i, :], sigsCP)
 
             if self.nav.ephopt == 4:
-
-                antsPR = antModelTx(
-                    self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :])
-                antsCP = antModelTx(
-                    self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :])
-
-            elif cs is not None and cs.cssrmode in (sc.QZS_MADOCA,
-                                                    sc.GAL_HAS_SIS,
-                                                    sc.GAL_HAS_IDD,
-                                                    sc.IGS_SSR,
-                                                    sc.RTCM3_SSR,
-                                                    sc.BDS_PPP,
-                                                    sc.PVS_PPP):
-
-                antsPR = antModelTx(self.nav, e[i, :], sigsPR,
-                                    sat, obs.t, rs[i, :], sig0)
-                antsCP = antModelTx(self.nav, e[i, :], sigsCP,
-                                    sat, obs.t, rs[i, :], sig0)
-
+                antsPR = antModelTx(self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :])
+                antsCP = antModelTx(self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :])
+            elif cs is not None and cs.cssrmode in _APC_TX_SSR_MODES:
+                antsPR = antModelTx(self.nav, e[i, :], sigsPR, sat, obs.t, rs[i, :], sig0)
+                antsCP = antModelTx(self.nav, e[i, :], sigsCP, sat, obs.t, rs[i, :], sig0)
             else:
-
                 antsPR = np.zeros(len(sigsPR))
                 antsCP = np.zeros(len(sigsCP))
 
-            # Check for invalid values
-            #
-            if antrPR is None or antrCP is None or \
-               antsPR is None or antsCP is None:
+            if antrPR is None or antrCP is None or antsPR is None or antsCP is None:
                 continue
 
-            # Range correction
-            # (only the nsf valid slots; high slots stay zero for mixed nf)
-            #
             prc[i, :nsf] = trop + antrPR + antsPR + iono - cbias
             cpc[i, :nsf] = trop + antrCP + antsCP - iono - pbias + phw
-
             r += relatv - _c*dts[i]
 
             for f in range(nsf):
-                # An edited band leaves its residual at zero, which is how
-                # every consumer already spells "no observation".
                 if self.nav.edt[sat-1, f] > 0:
                     continue
                 y[i, f] = obs.L[i, f]*lam[f]-(r+cpc[i, f])
                 y[i, f+nf] = obs.P[i, f]-(r+prc[i, f])
 
         return y, e, el
+
+    def _log_sdres_details(self, obs, x, sat, ref_idx_arr, sat_idx_arr,
+                           is_phase_arr, sig_label_idx_arr, sig_label_table,
+                           mapfw_sd, mu_arr, lam_ref_arr, lam_sat_arr,
+                           trop_idx, use_trop, use_iono,
+                           iono_i_idx, iono_j_idx, amb_i_idx, amb_j_idx,
+                           v, Ri, Rj):
+        """Write per-measurement ZTD / iono / ambiguity / residual monitor lines."""
+        meas_count = len(ref_idx_arr)
+        if self.nav.monlevel > 2:
+            if use_trop:
+                for idx_meas in range(meas_count):
+                    diff_map = (mapfw_sd[ref_idx_arr[idx_meas]]
+                                - mapfw_sd[sat_idx_arr[idx_meas]])
+                    self.nav.fout.write(fmt_ztd.format(
+                        time2str(obs.t), trop_idx, trop_idx, diff_map,
+                        x[trop_idx], np.sqrt(self.nav.P[trop_idx, trop_idx])))
+            if use_iono:
+                for idx_meas in range(meas_count):
+                    idx_i, idx_j = iono_i_idx[idx_meas], iono_j_idx[idx_meas]
+                    if idx_i < 0 or idx_j < 0:
+                        continue
+                    self.nav.fout.write(fmt_ion.format(
+                        time2str(obs.t),
+                        sat2id(sat[ref_idx_arr[idx_meas]]),
+                        sat2id(sat[sat_idx_arr[idx_meas]]),
+                        sig_label_table[sig_label_idx_arr[idx_meas]],
+                        idx_i, idx_j, mu_arr[idx_meas], x[idx_i], x[idx_j],
+                        np.sqrt(self.nav.P[idx_i, idx_i]),
+                        np.sqrt(self.nav.P[idx_j, idx_j])))
+            for idx_meas in range(meas_count):
+                if not is_phase_arr[idx_meas]:
+                    continue
+                idx_i, idx_j = amb_i_idx[idx_meas], amb_j_idx[idx_meas]
+                if idx_i < 0 or idx_j < 0:
+                    continue
+                self.nav.fout.write(fmt_amb.format(
+                    time2str(obs.t),
+                    sat2id(sat[ref_idx_arr[idx_meas]]),
+                    sat2id(sat[sat_idx_arr[idx_meas]]),
+                    sig_label_table[sig_label_idx_arr[idx_meas]],
+                    idx_i, idx_j, lam_ref_arr[idx_meas], lam_sat_arr[idx_meas],
+                    x[idx_i], x[idx_j],
+                    np.sqrt(self.nav.P[idx_i, idx_i]),
+                    np.sqrt(self.nav.P[idx_j, idx_j])))
+
+        if self.nav.monlevel > 1:
+            for idx_meas in range(meas_count):
+                self.nav.fout.write(fmt_res.format(
+                    time2str(obs.t),
+                    sat2id(sat[ref_idx_arr[idx_meas]]),
+                    sat2id(sat[sat_idx_arr[idx_meas]]),
+                    sig_label_table[sig_label_idx_arr[idx_meas]],
+                    idx_meas, v[idx_meas],
+                    np.sqrt(Ri[idx_meas]), np.sqrt(Rj[idx_meas])))
 
     def sdres(self, obs, x, y, e, sat, el):
         """
@@ -716,92 +697,12 @@ class ObservationModelMixin:
                 if 0 <= sat_j_id < self.nav.vsat.shape[0]:
                     self.nav.vsat[sat_j_id, freq_idx] = 1
 
-        if self.nav.monlevel > 2:
-            if use_trop:
-                for idx_meas in range(meas_count):
-                    diff_map = mapfw_sd[ref_idx_arr[idx_meas]] - mapfw_sd[sat_idx_arr[idx_meas]]
-                    self.nav.fout.write(
-                        fmt_ztd.format(
-                            time2str(obs.t),
-                            trop_idx,
-                            trop_idx,
-                            diff_map,
-                            x[trop_idx],
-                            np.sqrt(self.nav.P[trop_idx, trop_idx]),
-                        )
-                    )
-            if use_iono:
-                for idx_meas in range(meas_count):
-                    label = sig_label_table[sig_label_idx_arr[idx_meas]]
-                    idx_i = iono_i_idx[idx_meas]
-                    idx_j = iono_j_idx[idx_meas]
-                    if idx_i < 0 or idx_j < 0:
-                        continue
-                    sat_i_id = sat[ref_idx_arr[idx_meas]]
-                    sat_j_id = sat[sat_idx_arr[idx_meas]]
-                    self.nav.fout.write(
-                        fmt_ion.format(
-                            time2str(obs.t),
-                            sat2id(sat_i_id),
-                            sat2id(sat_j_id),
-                            label,
-                            idx_i,
-                            idx_j,
-                            mu_arr[idx_meas],
-                            x[idx_i],
-                            x[idx_j],
-                            np.sqrt(self.nav.P[idx_i, idx_i]),
-                            np.sqrt(self.nav.P[idx_j, idx_j]),
-                        )
-                    )
-
-            # Not nested under `if use_iono:`, where it was: a configuration
-            # that does not estimate the ionosphere -- RTK, PPP-RTK -- still
-            # has ambiguities, and printed none of them.
-            for idx_meas in range(meas_count):
-                if not is_phase_arr[idx_meas]:
-                    continue
-                idx_i = amb_i_idx[idx_meas]
-                idx_j = amb_j_idx[idx_meas]
-                if idx_i < 0 or idx_j < 0:
-                    continue
-                label = sig_label_table[sig_label_idx_arr[idx_meas]]
-                sat_i_id = sat[ref_idx_arr[idx_meas]]
-                sat_j_id = sat[sat_idx_arr[idx_meas]]
-                self.nav.fout.write(
-                    fmt_amb.format(
-                        time2str(obs.t),
-                        sat2id(sat_i_id),
-                        sat2id(sat_j_id),
-                        label,
-                        idx_i,
-                        idx_j,
-                        lam_ref_arr[idx_meas],
-                        lam_sat_arr[idx_meas],
-                        x[idx_i],
-                        x[idx_j],
-                        np.sqrt(self.nav.P[idx_i, idx_i]),
-                        np.sqrt(self.nav.P[idx_j, idx_j]),
-                    )
-                )
-
         if self.nav.monlevel > 1:
-            for idx_meas in range(meas_count):
-                label = sig_label_table[sig_label_idx_arr[idx_meas]]
-                sat_i_id = sat[ref_idx_arr[idx_meas]]
-                sat_j_id = sat[sat_idx_arr[idx_meas]]
-                self.nav.fout.write(
-                    fmt_res.format(
-                        time2str(obs.t),
-                        sat2id(sat_i_id),
-                        sat2id(sat_j_id),
-                        label,
-                        idx_meas,
-                        v[idx_meas],
-                        np.sqrt(Ri[idx_meas]),
-                        np.sqrt(Rj[idx_meas]),
-                    )
-                )
+            self._log_sdres_details(
+                obs, x, sat, ref_idx_arr, sat_idx_arr, is_phase_arr,
+                sig_label_idx_arr, sig_label_table, mapfw_sd, mu_arr,
+                lam_ref_arr, lam_sat_arr, trop_idx, use_trop, use_iono,
+                iono_i_idx, iono_j_idx, amb_i_idx, amb_j_idx, v, Ri, Rj)
 
         R = self.ddcov(nb, len(nb), Ri, Rj, meas_count)
 

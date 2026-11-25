@@ -15,6 +15,13 @@ from cssrlib.gnss import Seph, STOParam, EOPParam
 from cssrlib.gnss import IONParam
 
 
+_EPH_MODE_MAP = {
+    'CNAV': 1, 'CNV1': 1, 'FNAV': 1, 'L1OC': 1,
+    'CNV2': 2, 'L1NV': 2,
+    'CNV3': 3, 'L3OC': 3,
+}
+
+
 class NavFileMixin:
     """Mixed into :class:`~cssrlib.fileio.reader.rnxdec`."""
 
@@ -271,27 +278,38 @@ class NavFileMixin:
         """RINEX-4 ephemeris record header.
 
         Sets mode_nav and returns the record's first data line."""
+        self.mode_nav = _EPH_MODE_MAP.get(line[10:14], 0)
+        return fnav.readline()
 
-        sys = char2sys(line[6])
-        self.mode_nav = 0  # LNAV, D1/D2, INAV
-        m = line[10:14]
-        if m == 'CNAV' or m == 'CNV1' or m == 'FNAV':
-            self.mode_nav = 1
-        elif m == 'CNV2' or m == 'L1NV':
-            self.mode_nav = 2
-        elif m == 'CNV3':
-            self.mode_nav = 3
-        elif m == 'FDMA':
-            self.mode_nav = 0
-        elif m == 'L1OC':
-            self.mode_nav = 1
-        elif m == 'L3OC':
-            self.mode_nav = 3
-        elif m == 'SBAS':
-            self.mode_nav = 0
-        line = fnav.readline()
+    def _decode_geph_cdma_ext(self, fnav, geph):
+        """Read RINEX >=3.05 L1OC/L3OC lines #4-#8 and return transmission tod [s]."""
+        line = fnav.readline()  # line #4
+        geph.sattype = int(self.flt(line, 0))
+        geph.src = int(self.flt(line, 1))
+        geph.aode = int(self.flt(line, 2))
+        geph.aodc = int(self.flt(line, 3))
 
-        return line
+        line = fnav.readline()  # line #5
+        _ = int(self.flt(line, 0))  # attitude flag P2
+        geph.tin = self.flt(line, 1)  # sec of day, UTC(SU)
+        geph.tau1 = self.flt(line, 2)
+        geph.tau2 = self.flt(line, 3)
+
+        line = fnav.readline()  # line #6
+        geph.psi = self.flt(line, 0)  # yaw angle [rad]
+        geph.sn = int(self.flt(line, 1))
+        geph.win = self.flt(line, 2)
+        geph.dw = self.flt(line, 3)
+
+        line = fnav.readline()  # line #7
+        geph.wmax = self.flt(line, 0)
+        for k in range(3):
+            geph.dpos[k] = self.flt(line, k + 1)
+
+        line = fnav.readline()  # line #8
+        geph.urai[0] = int(self.flt(line, 0))
+        geph.urai[1] = int(self.flt(line, 1))
+        return self.flt(line, 2)
 
     def _decode_geph(self, line, fnav, nav, sys):
         """GLONASS ephemeris, FDMA or L1OC / L3OC."""
@@ -313,10 +331,7 @@ class NavFileMixin:
 
         geph.taun = -self.flt(line, 1)
         geph.gamn = self.flt(line, 2)
-        if self.mode_nav == 0:  # FDMA
-            t0 = self.flt(line, 3)
-        else:  # L1OC, L3OC
-            bet_ = self.flt(line, 3)  # clock drift rate
+        t0 = self.flt(line, 3)
 
         line = fnav.readline()  # line #1
         pos[0] = self.flt(line, 0)*1e3
@@ -328,77 +343,36 @@ class NavFileMixin:
         pos[1] = self.flt(line, 0)*1e3
         vel[1] = self.flt(line, 1)*1e3
         acc[1] = self.flt(line, 2)*1e3
-
         if self.mode_nav == 0:  # FDMA
             geph.frq = int(self.flt(line, 3))
-
             if geph.frq > 128:
                 geph.frq -= 256
-        else:  # L1OC
-            dvalid = int(self.flt(line, 3))
 
         line = fnav.readline()  # line #3
         pos[2] = self.flt(line, 0)*1e3
         vel[2] = self.flt(line, 1)*1e3
         acc[2] = self.flt(line, 2)*1e3
+        if self.mode_nav == 0:  # FDMA
+            geph.age = int(self.flt(line, 3))
 
         geph.pos = pos
         geph.vel = vel
         geph.acc = acc
 
-        if self.mode_nav == 0:  # FDMA
-            geph.age = int(self.flt(line, 3))
-        elif self.mode_nav == 1:  # L1OC
-            tgd_L2OCp = self.flt(line, 3)  # tgd_L2OCp
-        elif self.mode_nav == 3:  # L3OC
-            isc_L3OCp = self.flt(line, 3)  # isc_L3OCp
-
         # Use GLONASS line #4 only from RINEX v3.05 onwards
-        #
         if self.ver >= 3.05:
-
-            line = fnav.readline()  # line #4
-
             if self.mode_nav == 0:  # FDMA
+                line = fnav.readline()  # line #4
                 # b7-8: M, b6: P4, b5: P3, b4: P2, b2-3: P1, b0-1: P
                 geph.status = int(self.flt(line, 0))
                 geph.dtaun = -self.flt(line, 1)
                 geph.urai[0] = int(self.flt(line, 2))
                 if len(line) >= 80:
                     geph.svh = int(self.flt(line, 3))
-            else:  # L1OC,L3OC
-                geph.sattype = int(self.flt(line, 0))
-                geph.src = int(self.flt(line, 1))
-                geph.aode = int(self.flt(line, 2))
-                geph.aodc = int(self.flt(line, 3))
+            else:  # L1OC, L3OC
+                tot = self._decode_geph_cdma_ext(fnav, geph)
 
-                line = fnav.readline()  # line #5
-                P2 = int(self.flt(line, 0))  # attitude flag
-                geph.tin = self.flt(line, 1)  # sec of day, UTC(SU)
-                geph.tau1 = self.flt(line, 2)
-                geph.tau2 = self.flt(line, 3)
-
-                line = fnav.readline()  # line #6
-                geph.psi = self.flt(line, 0)  # yaw angle [rad]
-                geph.sn = int(self.flt(line, 1))
-                geph.win = self.flt(line, 2)
-                geph.dw = self.flt(line, 3)
-
-                line = fnav.readline()  # line #7
-                geph.wmax = self.flt(line, 0)
-                geph.dpos[0] = self.flt(line, 1)
-                geph.dpos[1] = self.flt(line, 2)
-                geph.dpos[2] = self.flt(line, 3)
-
-                line = fnav.readline()  # line #8
-                geph.urai[0] = int(self.flt(line, 0))
-                geph.urai[1] = int(self.flt(line, 1))
-                tot = self.flt(line, 2)
-
-        if self.mode_nav == 0:  # FDMA: message-frame time from line #0
-            tod = t0 % 86400.0
-        else:  # CDMA: transmission time from line #8
-            tod = tot % 86400.0
+        tod = (t0 if self.mode_nav == 0 else tot) % 86400.0
         tof = gpst2time(week, tod + dow*86400.0)
         tof = self.adjday(tof, toc)
 
@@ -409,7 +383,6 @@ class NavFileMixin:
         geph.iode = int(((tocs+10800.0) % 86400)/900.0+0.5)
 
         nav.geph.append(geph)
-        return
 
     def _decode_seph(self, line, fnav, nav, sys):
         """SBAS ephemeris."""
@@ -452,37 +425,16 @@ class NavFileMixin:
         nav.seph.append(seph)
         return
 
-    def _decode_eph(self, line, fnav, nav, sys):
-        """Keplerian ephemeris: GPS, Galileo, QZSS, BeiDou, NavIC."""
-
-        prn = int(line[1:3])
-        if sys == uGNSS.QZS:
-            prn += 192
-        sat = prn2sat(sys, prn)
-        eph = Eph(sat)
-
-        eph.urai = np.zeros(4, dtype=int)
-        eph.sisai = np.zeros(4, dtype=int)
-        eph.isc = np.zeros(6)
-
-        eph.mode = self.mode_nav
-
-        eph.toc = self.decode_time(line, 4)
-        eph.af0 = self.flt(line, 1)
-        eph.af1 = self.flt(line, 2)
-        eph.af2 = self.flt(line, 3)
-
+    def _decode_eph_kepler(self, fnav, eph, sys):
+        """Read common Keplerian lines #1-#4."""
         line = fnav.readline()  # line #1
-
-        if sys == uGNSS.GAL or \
-                (sys == uGNSS.IRN and self.mode_nav == 0):
+        if sys == uGNSS.GAL or (sys == uGNSS.IRN and self.mode_nav == 0):
             eph.iode = int(self.flt(line, 0))
             eph.iodc = eph.iode
+        elif self.mode_nav > 0:
+            eph.Adot = self.flt(line, 0)
         else:
-            if self.mode_nav > 0:
-                eph.Adot = self.flt(line, 0)
-            else:
-                eph.iode = int(self.flt(line, 0))
+            eph.iode = int(self.flt(line, 0))
 
         eph.crs = self.flt(line, 1)
         eph.deln = self.flt(line, 2)
@@ -492,20 +444,17 @@ class NavFileMixin:
         eph.cuc = self.flt(line, 0)
         eph.e = self.flt(line, 1)
         eph.cus = self.flt(line, 2)
-        sqrtA = self.flt(line, 3)
-        eph.A = sqrtA**2
+        eph.A = self.flt(line, 3) ** 2
 
         line = fnav.readline()  # line #3
         if sys == uGNSS.IRN and self.mode_nav == 2:
             eph.iode = int(self.flt(line, 0))
             eph.iode = eph.iodc
+        elif sys in (uGNSS.GPS, uGNSS.QZS) and self.mode_nav > 0:  # CNAV, CNAV/2
+            eph.tops = self.flt(line, 0)
+            eph.week, eph.toes = time2gpst(eph.toc)
         else:
-            if (sys == uGNSS.GPS or sys == uGNSS.QZS) and \
-                    self.mode_nav > 0:  # CNAV, CNAV/2
-                eph.tops = self.flt(line, 0)
-                eph.week, eph.toes = time2gpst(eph.toc)
-            else:
-                eph.toes = self.flt(line, 0)
+            eph.toes = self.flt(line, 0)
         eph.cic = self.flt(line, 1)
         eph.OMG0 = self.flt(line, 2)
         eph.cis = self.flt(line, 3)
@@ -516,141 +465,191 @@ class NavFileMixin:
         eph.omg = self.flt(line, 2)
         eph.OMGd = self.flt(line, 3)
 
+    def _decode_eph_tail_gps_qzs(self, fnav, eph, sys):
+        """Read lines #5-#9 for GPS/QZSS (LNAV, CNAV, CNAV/2) and return tot."""
         line = fnav.readline()  # line #5
         eph.idot = self.flt(line, 0)
-
-        if sys == uGNSS.GAL or self.mode_nav == 0:
-            eph.code = int(self.flt(line, 1))  # source for GAL
+        if self.mode_nav == 0:
+            eph.code = int(self.flt(line, 1))
             eph.week = int(self.flt(line, 2))
-
-            if sys == uGNSS.GAL and self.ver < 4.0:
-                eph.mode = 1 if eph.code & 0x2 else 0
-
-        elif sys == uGNSS.IRN and self.mode_nav == 0:
-            eph.week = int(self.flt(line, 2))
-
         else:
             eph.delnd = self.flt(line, 1)
-            if sys == uGNSS.BDS:
-                eph.sattype = int(self.flt(line, 2))
-                eph.tops = int(self.flt(line, 3))
-            elif sys == uGNSS.IRN and self.mode_nav == 2:
-                eph.integ = int(self.flt(line, 3))  # rsf
-            else:  # CNAV, CNAV/2
-                eph.urai = [0, 0, 0, 0]
-                eph.urai[0] = int(self.flt(line, 2))
-                eph.urai[1] = int(self.flt(line, 3))
+            eph.urai = [0, 0, 0, 0]
+            eph.urai[0] = int(self.flt(line, 2))
+            eph.urai[1] = int(self.flt(line, 3))
 
         line = fnav.readline()  # line #6
-        if sys == uGNSS.BDS and self.mode_nav > 0:
-            eph.sisai[0] = int(self.flt(line, 0))  # oe
-            eph.sisai[1] = int(self.flt(line, 1))  # ocb
-            eph.sisai[2] = int(self.flt(line, 2))  # oc1
-            eph.sisai[3] = int(self.flt(line, 3))  # oc2
-        elif sys == uGNSS.IRN:
-            if self.mode_nav == 0:
-                eph.sva = self.flt(line, 0)
-            else:  # L1NV
-                eph.urai = self.flt(line, 0)
-            eph.svh = int(self.flt(line, 1))
-            if self.mode_nav == 2 and eph.integ == 1:
-                eph.tgd = int(self.flt(line, 3))
-            else:
-                eph.tgd = int(self.flt(line, 2))
+        eph.sva = int(self.flt(line, 0))
+        eph.svh = int(self.flt(line, 1))
+        eph.tgd = float(self.flt(line, 2))
+        if self.mode_nav == 0:
+            eph.iodc = int(self.flt(line, 3))
         else:
+            eph.urai[2] = int(self.flt(line, 3))  # URAI_NED2
+            eph.urai[3] = eph.sva  # URAI_ED
+        if sys == uGNSS.QZS:
+            eph.code = eph.svh & 0x11  # L1C/A:0x01 or L1C/B:0x10
+            eph.svh = eph.svh & 0xEE   # mask L1C/A, L1C/B health
+
+        line = fnav.readline()  # line #7
+        if self.mode_nav == 0:  # LNAV
+            tot = self.flt(line, 0)
+            if len(line) >= 42:
+                eph.fit = int(self.flt(line, 1))
+            return tot
+
+        for k in range(4):  # CNAV, CNAV/2: ISC_L1CA, ISC_L2C, ISC_L5I5, ISC_L5Q5
+            eph.isc[k] = self.flt(line, k)
+
+        line = fnav.readline()  # line #8
+        if self.mode_nav == 2:  # CNAV/2
+            eph.isc[4] = self.flt(line, 0)  # ISC_L1Cd
+            eph.isc[5] = self.flt(line, 1)  # ISC_L1Cp
+            line = fnav.readline()  # line #9
+
+        tot = int(self.flt(line, 0))
+        eph.wn_op = int(self.flt(line, 1))
+        if len(line) >= 61:  # optional
+            eph.integ = int(self.flt(line, 2))
+        return tot
+
+    def _decode_eph_tail_gal(self, fnav, eph):
+        """Read lines #5-#7 for Galileo (I/NAV, F/NAV) and return tot."""
+        line = fnav.readline()  # line #5
+        eph.idot = self.flt(line, 0)
+        eph.code = int(self.flt(line, 1))  # data source
+        eph.week = int(self.flt(line, 2))
+        if self.ver < 4.0:
+            eph.mode = 1 if eph.code & 0x2 else 0
+
+        line = fnav.readline()  # line #6
+        eph.sva = int(self.flt(line, 0))
+        eph.svh = int(self.flt(line, 1))
+        eph.tgd = float(self.flt(line, 2))
+        tgd_b = float(self.flt(line, 3))
+        if (eph.code >> 9) & 1:  # E5b, E1
+            eph.tgd_b = eph.tgd
+            eph.tgd = tgd_b
+        else:  # E5a, E1
+            eph.tgd_b = tgd_b
+
+        line = fnav.readline()  # line #7
+        return self.flt(line, 0)
+
+    def _decode_eph_tail_bds(self, fnav, eph):
+        """Read lines #5-#9 for BeiDou (D1/D2, B-CNAV1/2/3) and return tot."""
+        line = fnav.readline()  # line #5
+        eph.idot = self.flt(line, 0)
+        if self.mode_nav == 0:
+            eph.code = int(self.flt(line, 1))
+            eph.week = int(self.flt(line, 2))
+
+            line = fnav.readline()  # line #6
             eph.sva = int(self.flt(line, 0))
             eph.svh = int(self.flt(line, 1))
             eph.tgd = float(self.flt(line, 2))
-            if sys == uGNSS.GPS or sys == uGNSS.QZS:
-                if self.mode_nav == 0:
-                    eph.iodc = int(self.flt(line, 3))
-                else:
-                    eph.urai[2] = int(self.flt(line, 3))  # URAI_NED2
-                    eph.urai[3] = eph.sva  # URAI_ED
-            elif sys == uGNSS.GAL:
-                tgd_b = float(self.flt(line, 3))
-                if (eph.code >> 9) & 1:  # E5b,E1
-                    eph.tgd_b = eph.tgd
-                    eph.tgd = tgd_b
-                else:  # E5a,E1
-                    eph.tgd_b = tgd_b
-            elif sys == uGNSS.BDS:
-                eph.tgd_b = float(self.flt(line, 3))  # tgd2 B2/B3
+            eph.tgd_b = float(self.flt(line, 3))  # tgd2 B2/B3
 
-            if sys == uGNSS.QZS:
-                eph.code = eph.svh & 0x11  # L1C/A:0x01 or L1C/B:0x10
-                eph.svh = eph.svh & 0xEE   # mask L1C/A, L1C/B health
+            line = fnav.readline()  # line #7
+            tot = self.flt(line, 0)
+            eph.iodc = int(self.flt(line, 1))
+            return tot
+
+        eph.delnd = self.flt(line, 1)
+        eph.sattype = int(self.flt(line, 2))
+        eph.tops = int(self.flt(line, 3))
+
+        line = fnav.readline()  # line #6
+        for k in range(4):  # oe, ocb, oc1, oc2
+            eph.sisai[k] = int(self.flt(line, k))
 
         if self.mode_nav < 3:
             line = fnav.readline()  # line #7
-            if sys == uGNSS.BDS:
-                if self.mode_nav == 0:  # D1/D2
-                    tot = self.flt(line, 0)
-                    eph.iodc = int(self.flt(line, 1))
-                else:  # CNAV-1,2,3
-                    if self.mode_nav == 1:  # CNAV-1
-                        eph.isc[0] = float(self.flt(line, 0))  # B1Cd
-                    elif self.mode_nav == 2:  # CNAV-2
-                        eph.isc[1] = float(self.flt(line, 1))  # B2ad
+            if self.mode_nav == 1:  # CNAV-1
+                eph.isc[0] = float(self.flt(line, 0))  # B1Cd
+            elif self.mode_nav == 2:  # CNAV-2
+                eph.isc[1] = float(self.flt(line, 1))  # B2ad
+            eph.tgd = float(self.flt(line, 2))    # tgd_B1Cp
+            eph.tgd_b = float(self.flt(line, 3))  # tgd_B2ap
 
-                    eph.tgd = float(self.flt(line, 2))    # tgd_B1Cp
-                    eph.tgd_b = float(self.flt(line, 3))  # tgd_B2ap
+        line = fnav.readline()  # line #8
+        eph.sismai = int(self.flt(line, 0))
+        eph.svh = int(self.flt(line, 1))
+        eph.integ = int(self.flt(line, 2))
+        if self.mode_nav < 3:  # CNAV-1,2
+            eph.iodc = int(self.flt(line, 3))
+        else:  # CNAV-3
+            eph.tgd_b = float(self.flt(line, 3))  # tgd_B2bI
 
-            elif sys == uGNSS.IRN:
-                if self.mode_nav > 0:
-                    if eph.integ == 0:  # rsf
-                        eph.isc[5] = float(self.flt(line, 0))  # S
-                        eph.isc[4] = float(self.flt(line, 1))  # L1D
-                    else:
-                        eph.isc[5] = float(self.flt(line, 2))  # L1P
-                        eph.isc[4] = float(self.flt(line, 3))  # L1D
+        line = fnav.readline()  # line #9
+        tot = self.flt(line, 0)
+        if self.mode_nav < 3:  # CNAV-1,2
+            eph.iode = int(self.flt(line, 3))
+        return tot
 
-                    line = fnav.readline()  # line #8
+    def _decode_eph_tail_irn(self, fnav, eph):
+        """Read lines #5-#8 for NavIC (LNAV, L1NV) and return tot."""
+        line = fnav.readline()  # line #5
+        eph.idot = self.flt(line, 0)
+        if self.mode_nav == 0:
+            eph.code = int(self.flt(line, 1))
+            eph.week = int(self.flt(line, 2))
+        else:
+            eph.delnd = self.flt(line, 1)
+            if self.mode_nav == 2:
+                eph.integ = int(self.flt(line, 3))  # rsf
 
-                tot = self.flt(line, 0)
+        line = fnav.readline()  # line #6
+        if self.mode_nav == 0:
+            eph.sva = self.flt(line, 0)
+        else:  # L1NV
+            eph.urai = self.flt(line, 0)
+        eph.svh = int(self.flt(line, 1))
+        if self.mode_nav == 2 and eph.integ == 1:
+            eph.tgd = int(self.flt(line, 3))
+        else:
+            eph.tgd = int(self.flt(line, 2))
 
-            elif sys == uGNSS.GAL:
-                tot = self.flt(line, 0)
+        line = fnav.readline()  # line #7
+        if self.mode_nav > 0:
+            if eph.integ == 0:  # rsf
+                eph.isc[5] = float(self.flt(line, 0))  # S
+                eph.isc[4] = float(self.flt(line, 1))  # L1D
+            else:
+                eph.isc[5] = float(self.flt(line, 2))  # L1P
+                eph.isc[4] = float(self.flt(line, 3))  # L1D
+            line = fnav.readline()  # line #8
 
-            elif sys in (uGNSS.GPS, uGNSS.QZS):
-                if self.mode_nav > 0:  # CNAV, CNAV/2
-                    eph.isc[0] = self.flt(line, 0)  # ISC_L1CA
-                    eph.isc[1] = self.flt(line, 1)  # ISC_L2C
-                    eph.isc[2] = self.flt(line, 2)  # ISC_L5I5
-                    eph.isc[3] = self.flt(line, 3)  # ISC_L5Q5
-                else:  # LNAV
-                    tot = self.flt(line, 0)
-                    if len(line) >= 42:
-                        eph.fit = int(self.flt(line, 1))
+        return self.flt(line, 0)
+
+    def _decode_eph(self, line, fnav, nav, sys):
+        """Keplerian ephemeris: GPS, Galileo, QZSS, BeiDou, NavIC."""
+        prn = int(line[1:3])
+        if sys == uGNSS.QZS:
+            prn += 192
+        sat = prn2sat(sys, prn)
+        eph = Eph(sat)
+
+        eph.urai = np.zeros(4, dtype=int)
+        eph.sisai = np.zeros(4, dtype=int)
+        eph.isc = np.zeros(6)
+        eph.mode = self.mode_nav
+
+        eph.toc = self.decode_time(line, 4)
+        eph.af0 = self.flt(line, 1)
+        eph.af1 = self.flt(line, 2)
+        eph.af2 = self.flt(line, 3)
+
+        self._decode_eph_kepler(fnav, eph, sys)
 
         if sys in (uGNSS.GPS, uGNSS.QZS):
-            if self.mode_nav > 0:  # CNAV, CNAV/2
-                line = fnav.readline()  # line #8
-                if self.mode_nav == 2:  # CNAV/2
-                    eph.isc[4] = self.flt(line, 0)  # ISC_L1Cd
-                    eph.isc[5] = self.flt(line, 1)  # ISC_L1Cp
-
-                    line = fnav.readline()  # line #9
-
-                tot = int(self.flt(line, 0))
-                eph.wn_op = int(self.flt(line, 1))
-                if len(line) >= 61:  # optional
-                    eph.integ = int(self.flt(line, 2))
-
-        elif sys == uGNSS.BDS and self.mode_nav > 0:  # CNAV-1,2,3
-            line = fnav.readline()  # line #8
-            eph.sismai = int(self.flt(line, 0))
-            eph.svh = int(self.flt(line, 1))
-            eph.integ = int(self.flt(line, 2))
-            if self.mode_nav < 3:  # CNAV-1,2
-                eph.iodc = int(self.flt(line, 3))
-            else:  # CNAV-3
-                eph.tgd_b = float(self.flt(line, 3))  # tgd_B2bI
-
-            line = fnav.readline()  # line #9
-            tot = self.flt(line, 0)
-            if self.mode_nav < 3:  # CNAV-1,2
-                eph.iode = int(self.flt(line, 3))
+            tot = self._decode_eph_tail_gps_qzs(fnav, eph, sys)
+        elif sys == uGNSS.GAL:
+            tot = self._decode_eph_tail_gal(fnav, eph)
+        elif sys == uGNSS.BDS:
+            tot = self._decode_eph_tail_bds(fnav, eph)
+        elif sys == uGNSS.IRN:
+            tot = self._decode_eph_tail_irn(fnav, eph)
 
         if sys == uGNSS.BDS:
             if self.mode_nav > 0:

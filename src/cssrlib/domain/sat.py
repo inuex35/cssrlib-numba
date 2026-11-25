@@ -8,25 +8,30 @@ import numpy as np
 from cssrlib.domain.enums import *  # noqa: F401,F403
 
 
+# Single source of truth for constellation numbering:
+#   (sys, rinex_char, sat_min, prn_offset, rinex_id_offset)
+# Ordered from highest sat_min to lowest so range lookup matches the first hit.
+_SAT_SYSTEMS = (
+    (uGNSS.IRN, 'I', uGNSS.IRNMIN, 0, 0),
+    (uGNSS.SBS, 'S', uGNSS.SBSMIN, 119, 100),
+    (uGNSS.GLO, 'R', uGNSS.GLOMIN, 0, 0),
+    (uGNSS.BDS, 'C', uGNSS.BDSMIN, 0, 0),
+    (uGNSS.QZS, 'J', uGNSS.QZSMIN, 192, 192),
+    (uGNSS.GAL, 'E', uGNSS.GALMIN, 0, 0),
+    (uGNSS.GPS, 'G', 0, 0, 0),
+)
+_SYS_INFO = {sys: (ch, sat_min, prn_off, id_off)
+             for sys, ch, sat_min, prn_off, id_off in _SAT_SYSTEMS}
+_CHAR_TO_SYS = {ch: sys for sys, ch, _, _, _ in _SAT_SYSTEMS}
+
+
 def prn2sat(sys, prn):
     """ convert sys+prn to sat """
-    if sys == uGNSS.GPS:
-        sat = prn
-    elif sys == uGNSS.GAL:
-        sat = prn+uGNSS.GALMIN
-    elif sys == uGNSS.QZS:
-        sat = prn-192+uGNSS.QZSMIN
-    elif sys == uGNSS.GLO:
-        sat = prn+uGNSS.GLOMIN
-    elif sys == uGNSS.BDS:
-        sat = prn+uGNSS.BDSMIN
-    elif sys == uGNSS.SBS:
-        sat = prn-119+uGNSS.SBSMIN
-    elif sys == uGNSS.IRN:
-        sat = prn+uGNSS.IRNMIN
-    else:
-        sat = 0
-    return sat
+    info = _SYS_INFO.get(sys)
+    if info is None:
+        return 0
+    _, sat_min, prn_off, _ = info
+    return prn - prn_off + sat_min
 
 
 def _build_sat_lookup():
@@ -36,23 +41,12 @@ def _build_sat_lookup():
     prn_arr = np.zeros(n, dtype=np.int32)
     cache = {}
     for sat in range(1, n):
-        if sat > uGNSS.MAXSAT:
-            prn = 0
-            sys = uGNSS.NONE
-        elif sat > uGNSS.IRNMIN:
-            prn = sat-uGNSS.IRNMIN; sys = uGNSS.IRN
-        elif sat > uGNSS.SBSMIN:
-            prn = sat+119-uGNSS.SBSMIN; sys = uGNSS.SBS
-        elif sat > uGNSS.GLOMIN:
-            prn = sat-uGNSS.GLOMIN; sys = uGNSS.GLO
-        elif sat > uGNSS.BDSMIN:
-            prn = sat-uGNSS.BDSMIN; sys = uGNSS.BDS
-        elif sat > uGNSS.QZSMIN:
-            prn = sat+192-uGNSS.QZSMIN; sys = uGNSS.QZS
-        elif sat > uGNSS.GALMIN:
-            prn = sat-uGNSS.GALMIN; sys = uGNSS.GAL
-        else:
-            prn = sat; sys = uGNSS.GPS
+        sys, prn = uGNSS.NONE, 0
+        for s_id, _, sat_min, prn_off, _ in _SAT_SYSTEMS:
+            if sat > sat_min:
+                sys = s_id
+                prn = sat + prn_off - sat_min
+                break
         sys_arr[sat] = int(sys)
         prn_arr[sat] = int(prn)
         cache[sat] = (sys, prn)
@@ -67,11 +61,7 @@ def sat2prn(sat):
     cached = _SAT2PRN_CACHE.get(sat)
     if cached is not None:
         return cached
-    # Out-of-range fallback (extremely rare).
-    if sat > uGNSS.MAXSAT:
-        out = (uGNSS.NONE, 0)
-    else:
-        out = (uGNSS.NONE, 0)
+    out = (uGNSS.NONE, 0)
     _SAT2PRN_CACHE[sat] = out
     return out
 
@@ -79,16 +69,12 @@ def sat2prn(sat):
 def sat2id(sat):
     """ convert satellite number to id """
     sys, prn = sat2prn(sat)
-    gnss_tbl = {uGNSS.GPS: 'G', uGNSS.GLO: 'R', uGNSS.GAL: 'E', uGNSS.BDS: 'C',
-                uGNSS.QZS: 'J', uGNSS.SBS: 'S', uGNSS.IRN: 'I'}
-    if sys not in gnss_tbl:
+    info = _SYS_INFO.get(sys)
+    if info is None:
         print(f"{sat} {sys} {prn}")
         return -1
-    if sys == uGNSS.QZS:
-        prn -= 192
-    elif sys == uGNSS.SBS:
-        prn -= 100
-    return '%s%02d' % (gnss_tbl[sys], prn)
+    ch, _, _, id_off = info
+    return '%s%02d' % (ch, prn - id_off)
 
 
 def id2sat(id_):
@@ -96,33 +82,16 @@ def id2sat(id_):
     sys = char2sys(id_[0])
     if sys == uGNSS.NONE:
         return -1
-
-    prn = int(id_[1:3])
-    if sys == uGNSS.QZS:
-        prn += 192
-    elif sys == uGNSS.SBS:
-        prn += 100
-    sat = prn2sat(sys, prn)
-    return sat
+    prn = int(id_[1:3]) + _SYS_INFO[sys][3]
+    return prn2sat(sys, prn)
 
 
 def char2sys(c):
     """ convert character to GNSS """
-    gnss_tbl = {'G': uGNSS.GPS, 'R': uGNSS.GLO, 'E': uGNSS.GAL, 'C': uGNSS.BDS,
-                'J': uGNSS.QZS, 'S': uGNSS.SBS, 'I': uGNSS.IRN}
-
-    if c not in gnss_tbl:
-        return uGNSS.NONE
-    else:
-        return gnss_tbl[c]
+    return _CHAR_TO_SYS.get(c, uGNSS.NONE)
 
 
 def sys2char(sys):
     """ convert gnss to character """
-    gnss_tbl = {uGNSS.GPS: 'G', uGNSS.GLO: 'R', uGNSS.GAL: 'E', uGNSS.BDS: 'C',
-                uGNSS.QZS: 'J', uGNSS.SBS: 'S', uGNSS.IRN: 'I'}
-
-    if sys not in gnss_tbl:
-        return "?"
-    else:
-        return gnss_tbl[sys]
+    info = _SYS_INFO.get(sys)
+    return info[0] if info is not None else "?"
