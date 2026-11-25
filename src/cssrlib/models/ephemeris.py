@@ -2,6 +2,8 @@
 module for ephemeris processing
 """
 
+from bisect import bisect_left
+
 from cssrlib.core.ssr_types import sCType
 from cssrlib.core.ssr_types import sCSSRTYPE as sc
 import numpy as np
@@ -15,25 +17,77 @@ MAXDTOE_t = {uGNSS.GPS: 7201.0, uGNSS.GAL: 14400.0, uGNSS.QZS: 7201.0,
              uGNSS.SBS: 360.0}
 
 
+_EPH_INDEX_CACHE = {}
+
+
+def _toe_sec(t):
+    return float(t.time) + float(t.sec)
+
+
+def _get_eph_index(nav):
+    """Return cached {(sat, mode): (toes, ephs)} and {sat: (toes, ephs)} for nav list."""
+    key = id(nav)
+    n = len(nav)
+    cached = _EPH_INDEX_CACHE.get(key)
+    if cached is not None and cached[0] is nav and cached[1] == n:
+        return cached[2], cached[3]
+
+    by_sat_mode = {}
+    by_sat = {}
+    for idx, eph_ in enumerate(nav):
+        t_s = _toe_sec(eph_.toe)
+        by_sat_mode.setdefault((eph_.sat, eph_.mode), []).append((t_s, idx, eph_))
+        by_sat.setdefault(eph_.sat, []).append((t_s, idx, eph_))
+
+    def _finalize(buckets):
+        out = {}
+        for k, items in buckets.items():
+            items.sort(key=lambda x: (x[0], x[1]))
+            out[k] = ([x[0] for x in items], [x[2] for x in items])
+        return out
+
+    idx_sm = _finalize(by_sat_mode)
+    idx_s = _finalize(by_sat)
+    if len(_EPH_INDEX_CACHE) > 16:
+        _EPH_INDEX_CACHE.clear()
+    _EPH_INDEX_CACHE[key] = (nav, n, idx_sm, idx_s)
+    return idx_sm, idx_s
+
+
+def _nearest_in_bucket(bucket, t, t_s, tmax):
+    if not bucket:
+        return None
+    toes, ephs = bucket
+    pos = bisect_left(toes, t_s)
+    best = None
+    tmin = tmax + 1.0
+    for j in (pos - 1, pos):
+        if 0 <= j < len(ephs):
+            eph_ = ephs[j]
+            dt = abs(timediff(t, eph_.toe))
+            if dt <= tmax and dt <= tmin:
+                best = eph_
+                tmin = dt
+    return best
+
+
 def findeph(nav, t, sat, iode=-1, mode=0):
     """ find ephemeris for sat """
     sys, _ = sat2prn(sat)
-    eph = None
     tmax = MAXDTOE_t[sys]
-    tmin = tmax + 1.0
-    for eph_ in nav:
-        if eph_.sat != sat or (iode >= 0 and iode != eph_.iode):
-            continue
-        if eph_.mode != mode:
-            continue
-        dt = abs(timediff(t, eph_.toe))
-        if dt > tmax:
-            continue
-        if iode >= 0:
-            return eph_
-        if dt <= tmin:
-            eph = eph_
-            tmin = dt
+    idx_sm, idx_s = _get_eph_index(nav)
+
+    if iode >= 0:
+        bucket = idx_sm.get((sat, mode))
+        if not bucket:
+            return None
+        for eph_ in bucket[1]:
+            if eph_.iode == iode and abs(timediff(t, eph_.toe)) <= tmax:
+                return eph_
+        return None
+
+    t_s = _toe_sec(t)
+    eph = _nearest_in_bucket(idx_sm.get((sat, mode)), t, t_s, tmax)
 
     # RINEX-4 fallback: a constellation may be broadcast only under a
     # non-default navigation message (e.g. BeiDou-3 as B-CNAV1/2/3, mode
@@ -42,17 +96,8 @@ def findeph(nav, t, sat, iode=-1, mode=0):
     # ephemeris is still selected. Restricted to the plain broadcast lookup
     # (mode == 0 and iode < 0); IODE/mode-keyed SSR lookups keep the strict
     # behaviour, so this can only add results where the old code returned None.
-    if eph is None and iode < 0 and mode == 0:
-        tmin = tmax + 1.0
-        for eph_ in nav:
-            if eph_.sat != sat:
-                continue
-            dt = abs(timediff(t, eph_.toe))
-            if dt > tmax:
-                continue
-            if dt <= tmin:
-                eph = eph_
-                tmin = dt
+    if eph is None and mode == 0:
+        eph = _nearest_in_bucket(idx_s.get(sat), t, t_s, tmax)
 
     return eph
 
