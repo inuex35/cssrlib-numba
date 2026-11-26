@@ -1,6 +1,8 @@
 """Pairing two receivers' observation streams, and choosing signals."""
 
 import numpy as np
+from cssrlib.domain.structs import Obs
+from cssrlib.domain.timescale import timeadd
 from cssrlib.gnss import uTYP
 from cssrlib.gnss import timediff
 
@@ -29,7 +31,7 @@ def _obs_is_eof(obs):
     return obs.t.time == 0 and obs.t.sec == 0.0
 
 
-def sync_obs_hold(dec, decb, maxage=30.0):
+def sync_obs_hold(dec, decb, maxage=30.0, dt_fill=None):
     """
     Rover-driven sync generator with base-station hold (RTKLIB maxtdiff-style).
 
@@ -52,6 +54,10 @@ def sync_obs_hold(dec, decb, maxage=30.0):
     maxage : float
         Maximum |t_rover - t_base| (seconds) for which the base obs is still
         considered usable. Mirrors RTKLIB ``prcopt.maxtdiff`` (default 30 s).
+    dt_fill : float or None
+        When set (e.g. ``0.2`` for 5 Hz), emit empty ``Obs()`` records at
+        ``dt_fill``-second steps across gaps in the rover stream where
+        ``t_rover - prev_t > 1.5 * dt_fill``, with ``obs_base=None``.
     """
     obsb_curr = decb.decode_obs()
     if _obs_is_eof(obsb_curr):
@@ -62,10 +68,19 @@ def sync_obs_hold(dec, decb, maxage=30.0):
         if _obs_is_eof(obsb_next):
             obsb_next = None
 
+    prev_t = None
     while True:
         obs = dec.decode_obs()
         if _obs_is_eof(obs):
             return
+        if dt_fill is not None and prev_t is not None:
+            t_fill = timeadd(prev_t, dt_fill)
+            while timediff(obs.t, t_fill) > 0.5 * dt_fill:
+                obs_empty = Obs()
+                obs_empty.t = t_fill
+                yield obs_empty, None, float('nan')
+                t_fill = timeadd(t_fill, dt_fill)
+        prev_t = obs.t
 
         # Advance base while the next base record is strictly closer to the
         # current rover epoch than the held one (nearest-neighbor hold).
